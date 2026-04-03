@@ -190,6 +190,14 @@ def run_strategy(input_path: str) -> dict:
     if not fpath.exists() or size < MIN_OUTPUT_BYTES:
         raise RuntimeError(f"Output too small ({size} bytes)")
 
+    # Rename to ASCII-safe filename to avoid 502s on Render download route
+    safe_name = re.sub(r'[^\w\-_. ]', '_', fpath.stem) + fpath.suffix
+    safe_name = re.sub(r'\s+', '_', safe_name)
+    safe_path = fpath.parent / safe_name
+    if safe_path != fpath:
+        fpath.rename(safe_path)
+        fpath = safe_path
+
     return {
         "label":    "Account Strategy Analysis",
         "filename": fpath.name,
