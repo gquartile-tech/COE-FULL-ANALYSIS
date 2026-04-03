@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>CoE Full Analysis</title>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+  <style>
+    :root {
+      --bg:#0f1419; --card:#1a2330; --border:#243040;
+      --teal:#00e5b0; --teal-bg:rgba(0,229,176,.08); --teal-border:rgba(0,229,176,.25);
+      --text:#e8edf2; --muted:#5a7a8a; --label:#8faab8;
+      --ok:#00e5b0; --flag:#ff4d6d; --partial:#ffb347;
+      --ok-bg:rgba(0,229,176,.08); --flag-bg:rgba(255,77,109,.08); --err-bg:rgba(255,77,109,.07);
+    }
+    *{box-sizing:border-box;margin:0;padding:0;}
+    body{
+      font-family:'Inter',sans-serif;
+      background-color:var(--bg);
+      background-image:
+        linear-gradient(rgba(0,229,176,.025) 1px,transparent 1px),
+        linear-gradient(90deg,rgba(0,229,176,.025) 1px,transparent 1px);
+      background-size:32px 32px;
+      color:var(--text);min-height:100vh;
+    }
+    .page{max-width:740px;margin:0 auto;padding:52px 24px 100px;}
+
+    .badge{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--teal);border-radius:4px;padding:5px 14px;font-family:'Space Mono',monospace;font-size:11px;letter-spacing:1.5px;color:var(--teal);margin-bottom:24px;}
+    .badge-dot{width:5px;height:5px;background:var(--teal);border-radius:50%;}
+    h1{font-size:34px;font-weight:700;line-height:1.2;letter-spacing:-.5px;margin-bottom:14px;}
+    h1 span{color:var(--teal);}
+    .tagline{font-size:14px;color:var(--label);line-height:1.7;margin-bottom:44px;}
+
+    /* ── Card ── */
+    .card{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:16px;}
+    .section{padding:26px 28px;border-bottom:1px solid var(--border);}
+    .section:last-child{border-bottom:none;}
+    .step-lbl{font-family:'Space Mono',monospace;font-size:10px;letter-spacing:2px;color:var(--teal);margin-bottom:8px;}
+    .step-title{font-size:15px;font-weight:700;margin-bottom:14px;display:flex;align-items:center;gap:8px;}
+    .step-title .fmt{font-size:12px;font-weight:400;color:var(--muted);font-family:'Space Mono',monospace;}
+
+    /* ── Dropzone ── */
+    .dropzone{border:2px dashed var(--border);border-radius:6px;padding:40px 20px;text-align:center;cursor:pointer;position:relative;transition:.2s;}
+    .dropzone:hover,.dropzone.over{border-color:var(--teal);background:rgba(0,229,176,.03);}
+    .dropzone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;}
+    .dz-icon{font-size:38px;margin-bottom:12px;display:block;}
+    .dz-main{font-size:14px;font-weight:600;margin-bottom:4px;}
+    .dz-sub{font-size:12px;color:var(--muted);}
+
+    .filepill{display:none;margin-top:14px;background:rgba(0,229,176,.07);border:1px solid rgba(0,229,176,.3);border-radius:6px;padding:11px 14px;align-items:center;gap:10px;font-family:'Space Mono',monospace;font-size:11px;color:var(--teal);word-break:break-all;}
+    .filepill.show{display:flex;}
+    .filepill .x{margin-left:auto;flex-shrink:0;background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer;line-height:1;}
+    .filepill .x:hover{color:var(--flag);}
+
+    /* ── Agents grid ── */
+    .agents-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:0 0 4px;}
+    .agent-pill{display:flex;align-items:center;gap:9px;padding:10px 13px;background:rgba(0,229,176,.04);border:1px solid var(--border);border-radius:6px;font-size:12px;color:var(--label);}
+    .agent-dot{width:7px;height:7px;border-radius:50%;background:var(--border);flex-shrink:0;}
+    .agent-name{font-weight:600;}
+
+    /* ── Run button ── */
+    #run-btn{display:block;width:100%;padding:16px;background:var(--teal);color:#081a10;border:none;border-radius:6px;font-family:'Space Mono',monospace;font-size:13px;font-weight:700;letter-spacing:2px;cursor:pointer;transition:.15s;margin-top:4px;}
+    #run-btn:hover:not(:disabled){background:#00ffc8;}
+    #run-btn:disabled{opacity:.3;cursor:not-allowed;}
+
+    /* ── Progress ── */
+    #prog{display:none;margin-top:16px;background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden;}
+    .prog-head{padding:12px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;font-family:'Space Mono',monospace;font-size:11px;letter-spacing:1.5px;color:var(--teal);}
+    .spin{width:12px;height:12px;border:2px solid rgba(0,229,176,.2);border-top-color:var(--teal);border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0;}
+    @keyframes spin{to{transform:rotate(360deg);}}
+    .prog-steps{padding:6px 0;}
+    .ps{display:flex;align-items:center;gap:10px;padding:9px 18px;font-size:12px;color:var(--muted);transition:.2s;}
+    .ps.active{color:var(--text);}
+    .ps.done{color:var(--teal);}
+    .ps-dot{width:6px;height:6px;border-radius:50%;background:var(--border);flex-shrink:0;transition:.2s;}
+    .ps.active .ps-dot{background:var(--teal);box-shadow:0 0 6px var(--teal);}
+    .ps.done .ps-dot{background:var(--teal);}
+
+    /* ── Global error ── */
+    #err{display:none;margin-top:14px;padding:13px 16px;background:var(--err-bg);border:1px solid rgba(255,77,109,.2);border-radius:6px;font-size:12px;font-family:'Space Mono',monospace;color:#ff8fa3;white-space:pre-wrap;word-break:break-word;line-height:1.6;}
+
+    /* ── Results ── */
+    #results{display:none;margin-top:28px;}
+    .results-header{font-family:'Space Mono',monospace;font-size:10px;letter-spacing:2px;color:var(--teal);margin-bottom:14px;}
+
+    .agent-result{background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:10px;}
+    .ar-head{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--border);}
+    .ar-icon{font-size:16px;flex-shrink:0;}
+    .ar-label{font-size:13px;font-weight:700;flex:1;}
+    .ar-status{font-family:'Space Mono',monospace;font-size:10px;letter-spacing:1px;padding:3px 9px;border-radius:3px;font-weight:700;}
+    .ar-status.ok{background:var(--ok-bg);color:var(--ok);border:1px solid rgba(0,229,176,.2);}
+    .ar-status.error{background:var(--flag-bg);color:var(--flag);border:1px solid rgba(255,77,109,.2);}
+
+    .ar-body{padding:14px 18px;}
+    .ar-dl{display:inline-flex;align-items:center;gap:8px;padding:9px 16px;background:transparent;border:1px solid var(--teal);border-radius:5px;color:var(--teal);font-family:'Space Mono',monospace;font-size:11px;letter-spacing:1.5px;font-weight:700;text-decoration:none;transition:.15s;margin-bottom:12px;}
+    .ar-dl:hover{background:var(--teal-bg);}
+
+    .ar-stats{display:flex;gap:14px;flex-wrap:wrap;}
+    .stat{display:flex;align-items:center;gap:6px;font-size:11px;font-family:'Space Mono',monospace;}
+    .stat-dot{width:6px;height:6px;border-radius:50%;}
+    .stat-dot.ok{background:var(--ok);}
+    .stat-dot.flag{background:var(--flag);}
+    .stat-dot.partial{background:var(--partial);}
+    .stat-val{color:var(--text);}
+    .stat-lbl{color:var(--muted);}
+
+    .ar-grade{display:inline-flex;align-items:center;gap:6px;font-family:'Space Mono',monospace;font-size:13px;font-weight:700;color:var(--teal);margin-bottom:12px;}
+    .ar-error{font-size:11px;font-family:'Space Mono',monospace;color:#ff8fa3;background:var(--err-bg);border:1px solid rgba(255,77,109,.15);border-radius:4px;padding:10px 12px;line-height:1.6;word-break:break-word;}
+
+    /* ── Reset ── */
+    #reset{display:none;margin-top:20px;background:none;border:none;color:var(--muted);font-size:12px;font-family:'Space Mono',monospace;cursor:pointer;letter-spacing:1px;}
+    #reset:hover{color:var(--teal);}
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <div class="badge"><span class="badge-dot"></span>COE · FULL ANALYSIS</div>
+  <h1>Full CoE <span>Analysis</span><br>Report Generator</h1>
+  <p class="tagline">
+    One Databricks export. Four analysis reports — Framework, Account Health, Account Mastery, and Strategy.<br>
+    Each agent runs independently. All outputs ready for download individually.
+  </p>
+
+  <div class="card">
+    <div class="section">
+      <div class="step-lbl">STEP 01 — UPLOAD</div>
+      <div class="step-title">Databricks Pre-Analysis Export <span class="fmt">.xlsx / .xlsm</span></div>
+      <div class="dropzone" id="dz">
+        <input type="file" id="fi" accept=".xlsx,.xlsm"/>
+        <span class="dz-icon">📁</span>
+        <div class="dz-main">Drop file here or click to browse</div>
+        <div class="dz-sub">Accepts .xlsx or .xlsm · max 50 MB</div>
+      </div>
+      <div class="filepill" id="pill">
+        <span>📄</span>
+        <span id="pill-name"></span>
+        <button class="x" id="pill-x">×</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="step-lbl">STEP 02 — AGENTS (AUTO)</div>
+      <div class="step-title">Four analyses will run on your file</div>
+      <div class="agents-grid">
+        <div class="agent-pill"><span class="agent-dot"></span><span class="agent-name">Framework Analysis</span></div>
+        <div class="agent-pill"><span class="agent-dot"></span><span class="agent-name">Account Health</span></div>
+        <div class="agent-pill"><span class="agent-dot"></span><span class="agent-name">Account Mastery</span></div>
+        <div class="agent-pill"><span class="agent-dot"></span><span class="agent-name">Strategy Analysis</span></div>
+      </div>
+    </div>
+  </div>
+
+  <button id="run-btn" disabled>▶ &nbsp;RUN FULL ANALYSIS</button>
+
+  <div id="prog">
+    <div class="prog-head">
+      <span class="spin" id="spin"></span>
+      <span id="prog-lbl">PROCESSING — ALL 4 AGENTS RUNNING</span>
+    </div>
+    <div class="prog-steps">
+      <div class="ps" id="s1"><span class="ps-dot"></span>Reading Databricks export &amp; account header</div>
+      <div class="ps" id="s2"><span class="ps-dot"></span>Framework — evaluating controls (C001–C048)</div>
+      <div class="ps" id="s3"><span class="ps-dot"></span>Account Health — evaluating KPI &amp; financial controls</div>
+      <div class="ps" id="s4"><span class="ps-dot"></span>Account Mastery — scoring &amp; grading</div>
+      <div class="ps" id="s5"><span class="ps-dot"></span>Strategy — populating Salesforce &amp; ASIN data</div>
+      <div class="ps" id="s6"><span class="ps-dot"></span>Finalising all output files</div>
+    </div>
+  </div>
+
+  <div id="err"></div>
+
+  <div id="results">
+    <div class="results-header">ANALYSIS COMPLETE — DOWNLOAD REPORTS BELOW</div>
+
+    <div class="agent-result" id="res-framework">
+      <div class="ar-head">
+        <span class="ar-icon">📋</span>
+        <span class="ar-label">Framework Analysis</span>
+        <span class="ar-status" id="st-framework">—</span>
+      </div>
+      <div class="ar-body" id="body-framework"></div>
+    </div>
+
+    <div class="agent-result" id="res-health">
+      <div class="ar-head">
+        <span class="ar-icon">🏥</span>
+        <span class="ar-label">Account Health Analysis</span>
+        <span class="ar-status" id="st-health">—</span>
+      </div>
+      <div class="ar-body" id="body-health"></div>
+    </div>
+
+    <div class="agent-result" id="res-mastery">
+      <div class="ar-head">
+        <span class="ar-icon">🎯</span>
+        <span class="ar-label">Account Mastery Analysis</span>
+        <span class="ar-status" id="st-mastery">—</span>
+      </div>
+      <div class="ar-body" id="body-mastery"></div>
+    </div>
+
+    <div class="agent-result" id="res-strategy">
+      <div class="ar-head">
+        <span class="ar-icon">📐</span>
+        <span class="ar-label">Account Strategy Analysis</span>
+        <span class="ar-status" id="st-strategy">—</span>
+      </div>
+      <div class="ar-body" id="body-strategy"></div>
+    </div>
+  </div>
+
+  <button id="reset">← Analyse another account</button>
+
+</div>
+
+<script>
+var file = null;
+var fi    = document.getElementById('fi');
+var dz    = document.getElementById('dz');
+var pill  = document.getElementById('pill');
+var pillN = document.getElementById('pill-name');
+var pillX = document.getElementById('pill-x');
+var runB  = document.getElementById('run-btn');
+var prog  = document.getElementById('prog');
+var errEl = document.getElementById('err');
+var res   = document.getElementById('results');
+var reset = document.getElementById('reset');
+
+function checkReady() { runB.disabled = !file; }
+
+function pickFile(f) {
+  file = f;
+  pillN.textContent = f.name;
+  pill.classList.add('show');
+  errEl.style.display = 'none';
+  res.style.display = 'none';
+  reset.style.display = 'none';
+  checkReady();
+}
+
+fi.addEventListener('change', function(){ if(fi.files[0]) pickFile(fi.files[0]); });
+dz.addEventListener('dragover', function(e){ e.preventDefault(); dz.classList.add('over'); });
+dz.addEventListener('dragleave', function(){ dz.classList.remove('over'); });
+dz.addEventListener('drop', function(e){
+  e.preventDefault(); dz.classList.remove('over');
+  if(e.dataTransfer.files[0]) pickFile(e.dataTransfer.files[0]);
+});
+pillX.addEventListener('click', function(){
+  file=null; fi.value='';
+  pill.classList.remove('show');
+  checkReady();
+});
+
+// ── Progress steps ────────────────────────────────────────────────────────────
+var steps  = ['s1','s2','s3','s4','s5','s6'];
+var delays = [0, 600, 1200, 2000, 2800, 4000];
+var timers = [];
+
+function startSteps() {
+  timers.forEach(clearTimeout); timers = [];
+  steps.forEach(function(id){ document.getElementById(id).className = 'ps'; });
+  steps.forEach(function(id, i){
+    timers.push(setTimeout(function(){
+      if(i > 0) document.getElementById(steps[i-1]).className = 'ps done';
+      document.getElementById(id).className = 'ps active';
+    }, delays[i]));
+  });
+}
+
+function doneSteps() {
+  timers.forEach(clearTimeout);
+  steps.forEach(function(id){ document.getElementById(id).className = 'ps done'; });
+  document.getElementById('spin').style.display = 'none';
+  document.getElementById('prog-lbl').textContent = 'COMPLETE';
+}
+
+// ── Render helpers ────────────────────────────────────────────────────────────
+function statBadge(count, type, label) {
+  return '<div class="stat"><span class="stat-dot ' + type + '"></span><span class="stat-val">' + count + '</span><span class="stat-lbl">' + label + '</span></div>';
+}
+
+function renderAgent(key, data) {
+  var statusEl = document.getElementById('st-' + key);
+  var bodyEl   = document.getElementById('body-' + key);
+
+  if (data.status === 'ok') {
+    statusEl.textContent = 'DONE';
+    statusEl.className   = 'ar-status ok';
+
+    var html = '<a class="ar-dl" href="/download/' + encodeURIComponent(data.filename) + '" target="_blank">↓ &nbsp;DOWNLOAD ' + (data.label || key).toUpperCase() + '</a>';
+
+    // Mastery grade
+    if (data.grade) {
+      html += '<div class="ar-grade">Grade: ' + data.grade;
+      if (data.score !== undefined) html += ' &nbsp;·&nbsp; Score: ' + data.score;
+      html += '</div>';
+    }
+
+    // OK / FLAG / PARTIAL stats (if available)
+    if (data.ok !== undefined || data.flag !== undefined || data.partial !== undefined) {
+      html += '<div class="ar-stats">';
+      if (data.ok      !== undefined) html += statBadge(data.ok,      'ok',      'OK');
+      if (data.flag    !== undefined) html += statBadge(data.flag,    'flag',    'FLAG');
+      if (data.partial !== undefined) html += statBadge(data.partial, 'partial', 'PARTIAL');
+      html += '</div>';
+    }
+
+    bodyEl.innerHTML = html;
+
+  } else {
+    statusEl.textContent = 'ERROR';
+    statusEl.className   = 'ar-status error';
+    bodyEl.innerHTML     = '<div class="ar-error">⚠ ' + (data.error || 'Unknown error') + '</div>';
+  }
+}
+
+// ── Run ───────────────────────────────────────────────────────────────────────
+runB.addEventListener('click', function() {
+  if (!file) return;
+  runB.disabled = true;
+  errEl.style.display = 'none';
+  res.style.display   = 'none';
+  reset.style.display = 'none';
+  prog.style.display  = 'block';
+  document.getElementById('spin').style.display = '';
+  document.getElementById('prog-lbl').textContent = 'PROCESSING — ALL 4 AGENTS RUNNING';
+  startSteps();
+
+  var fd = new FormData();
+  fd.append('file', file);
+
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', '/analyze', true);
+  xhr.onload = function() {
+    doneSteps();
+    var data;
+    try { data = JSON.parse(xhr.responseText); }
+    catch(e) { showErr('Could not parse server response.'); runB.disabled = false; return; }
+
+    if (data.error) { showErr(data.error); runB.disabled = false; return; }
+
+    // Render per-agent results
+    var agents = data.agents || {};
+    ['framework','health','mastery','strategy'].forEach(function(key) {
+      if (agents[key]) renderAgent(key, agents[key]);
+    });
+
+    res.style.display   = 'block';
+    reset.style.display = 'block';
+    res.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+  xhr.onerror = function() {
+    doneSteps();
+    showErr('Network error — check server connection.');
+    runB.disabled = false;
+  };
+  xhr.send(fd);
+});
+
+function showErr(msg) {
+  errEl.textContent    = '⚠  ' + msg;
+  errEl.style.display  = 'block';
+}
+
+reset.addEventListener('click', function() {
+  file = null; fi.value = '';
+  pill.classList.remove('show');
+  runB.disabled       = true;
+  prog.style.display  = 'none';
+  errEl.style.display = 'none';
+  res.style.display   = 'none';
+  reset.style.display = 'none';
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+});
+</script>
+</body>
+</html>
