@@ -12,7 +12,6 @@ import os
 import re
 import sys
 import traceback
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -190,14 +189,6 @@ def run_strategy(input_path: str) -> dict:
     if not fpath.exists() or size < MIN_OUTPUT_BYTES:
         raise RuntimeError(f"Output too small ({size} bytes)")
 
-    # Rename to ASCII-safe filename to avoid 502s on Render download route
-    safe_name = re.sub(r'[^\w\-_. ]', '_', fpath.stem) + fpath.suffix
-    safe_name = re.sub(r'\s+', '_', safe_name)
-    safe_path = fpath.parent / safe_name
-    if safe_path != fpath:
-        fpath.rename(safe_path)
-        fpath = safe_path
-
     return {
         "label":    "Account Strategy Analysis",
         "filename": fpath.name,
@@ -236,13 +227,12 @@ def analyze():
 
     agent_results = {}
 
-    # Run all 4 agents — each independently, collect success/error per agent
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {executor.submit(fn, input_path): key for key, fn in AGENTS.items()}
-        for future in as_completed(futures):
-            key = futures[future]
+    # Run agents sequentially — avoids memory spikes on single-core Render instances
+    # Each agent independently succeeds or fails; partial results are always surfaced
+    try:
+        for key, fn in AGENTS.items():
             try:
-                agent_results[key] = {"status": "ok", **future.result()}
+                agent_results[key] = {"status": "ok", **fn(input_path)}
             except Exception as e:
                 traceback.print_exc()
                 agent_results[key] = {
@@ -250,8 +240,13 @@ def analyze():
                     "label":  key.capitalize(),
                     "error":  str(e),
                 }
-
-    gc.collect()
+            gc.collect()
+    finally:
+        try:
+            os.remove(input_path)
+        except Exception:
+            pass
+        gc.collect()
 
     # Always return 200 — let the frontend handle per-agent status
     return jsonify({"agents": agent_results})
