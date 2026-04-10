@@ -332,7 +332,7 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
         else:
             r['C010'] = ControlResult('FLAG', f'Active personalization was detected across {active_count} area(s) ({labels}), but CS Notes do not sufficiently document the setup.', WHY['C010'], SOURCES['C010'])
 
-daily_target = to_float(ctx.proj_h)
+    daily_target = to_float(ctx.proj_h)
     if daily_target is None or not ctx.window_days or ctx.metrics.get('AdSpend') is None:
         r['C011'] = ControlResult('OK', '', WHY['C011'], SOURCES['C011'])
     else:
