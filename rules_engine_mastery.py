@@ -332,32 +332,18 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
         else:
             r['C010'] = ControlResult('FLAG', f'Active personalization was detected across {active_count} area(s) ({labels}), but CS Notes do not sufficiently document the setup.', WHY['C010'], SOURCES['C010'])
 
-    checks = []
-    msgs = []
-    daily_target = to_float(ctx.proj_h)
-    if daily_target is not None and ctx.window_days and ctx.metrics.get('AdSpend') is not None:
+daily_target = to_float(ctx.proj_h)
+    if daily_target is None or not ctx.window_days or ctx.metrics.get('AdSpend') is None:
+        r['C011'] = ControlResult('OK', '', WHY['C011'], SOURCES['C011'])
+    else:
         actual_daily = float(ctx.metrics['AdSpend']) / ctx.window_days
         gap = abs(actual_daily - daily_target) / daily_target if daily_target else None
-        checks.append('OK' if gap is not None and gap <= 0.20 else 'PARTIAL' if gap is not None and gap <= 0.40 else 'FLAG')
-        msgs.append(f'spend target {daily_target:.1f} vs actual daily spend {actual_daily:.1f}')
-    acos_t = norm_pct(ctx.proj_j)
-    if acos_t is not None and ctx.metrics.get('ACoS') is not None:
-        gap = abs(float(ctx.metrics['ACoS']) - acos_t) / acos_t if acos_t else None
-        checks.append('OK' if gap is not None and gap <= 0.10 else 'PARTIAL' if gap is not None and gap <= 0.25 else 'FLAG')
-        msgs.append(f'ACoS target {pct_str(acos_t)} vs current {pct_str(float(ctx.metrics["ACoS"]))}')
-    tacos_t = norm_pct(ctx.proj_k)
-    if tacos_t is not None and ctx.metrics.get('TACoS') is not None:
-        gap = abs(float(ctx.metrics['TACoS']) - tacos_t) / tacos_t if tacos_t else None
-        checks.append('OK' if gap is not None and gap <= 0.10 else 'PARTIAL' if gap is not None and gap <= 0.25 else 'FLAG')
-        msgs.append(f'TACoS target {pct_str(tacos_t)} vs current {pct_str(float(ctx.metrics["TACoS"]))}')
-    if not checks:
-        r['C011'] = ControlResult('OK', '', WHY['C011'], SOURCES['C011'])
-    elif all(x == 'OK' for x in checks):
-        r['C011'] = ControlResult('OK', '', WHY['C011'], SOURCES['C011'])
-    elif 'FLAG' in checks:
-        r['C011'] = ControlResult('FLAG', 'Target vs actual performance shows significant deviation across key KPIs.', WHY['C011'], SOURCES['C011'])
-    else:
-        r['C011'] = ControlResult('PARTIAL', 'Target vs actual performance shows moderate deviation across key KPIs.', WHY['C011'], SOURCES['C011'])
+        if gap is None or gap <= 0.20:
+            r['C011'] = ControlResult('OK', '', WHY['C011'], SOURCES['C011'])
+        elif gap <= 0.40:
+            r['C011'] = ControlResult('PARTIAL', f'Spend target {daily_target:.1f}/day vs actual daily spend {actual_daily:.1f} — moderate deviation ({gap:.0%}).', WHY['C011'], SOURCES['C011'])
+        else:
+            r['C011'] = ControlResult('FLAG', f'Spend target {daily_target:.1f}/day vs actual daily spend {actual_daily:.1f} — significant deviation ({gap:.0%}).', WHY['C011'], SOURCES['C011'])
 
     tags = [t.lower() for t in ctx.tags if t]
     has_best = any(any(w in t for w in BESTSELLER_WORDS) for t in tags)
