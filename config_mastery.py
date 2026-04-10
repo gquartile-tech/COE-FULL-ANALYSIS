@@ -52,7 +52,7 @@ WHY = {
     'C008': 'Understanding concentration is important because highly concentrated accounts need different prioritization and risk management.',
     'C009': 'Recent client contact cadence is evidence that the account narrative is current and client-informed.',
     'C010': 'Framework exceptions should be visible in CS notes so the CoE can tell whether they are intentional and justified.',
-    'C011': 'When targets are documented, they should be reasonably aligned with current KPI reality.',
+    'C011': 'When a spend target is documented, actual daily spend should be reasonably aligned with it. Significant deviation signals the account is not being managed to its stated budget.',
     'C012': 'Product tagging and segmentation reveal whether the account structure supports the intended strategy.',
     'C013': 'Manual review required during QR presentation call — interaction quality cannot be assessed from system data.',
     'C014': 'Manual review required during QR presentation call — explanation quality cannot be assessed from system data.',
