@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -227,12 +228,13 @@ def analyze():
 
     agent_results = {}
 
-    # Run agents sequentially — avoids memory spikes on single-core Render instances
-    # Each agent independently succeeds or fails; partial results are always surfaced
-    try:
-        for key, fn in AGENTS.items():
+    # Run all 4 agents — each independently, collect success/error per agent
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {executor.submit(fn, input_path): key for key, fn in AGENTS.items()}
+        for future in as_completed(futures):
+            key = futures[future]
             try:
-                agent_results[key] = {"status": "ok", **fn(input_path)}
+                agent_results[key] = {"status": "ok", **future.result()}
             except Exception as e:
                 traceback.print_exc()
                 agent_results[key] = {
@@ -240,13 +242,8 @@ def analyze():
                     "label":  key.capitalize(),
                     "error":  str(e),
                 }
-            gc.collect()
-    finally:
-        try:
-            os.remove(input_path)
-        except Exception:
-            pass
-        gc.collect()
+
+    gc.collect()
 
     # Always return 200 — let the frontend handle per-agent status
     return jsonify({"agents": agent_results})
@@ -255,20 +252,18 @@ def analyze():
 @app.route("/download/<path:filename>")
 def download(filename):
     from urllib.parse import unquote
+    from flask import send_file as _send_file
     filename = unquote(filename)
     p = OUTPUT_DIR / filename
 
     if not p.exists():
         return f"File not found: {filename}", 404
 
-    data = p.read_bytes()
-    return Response(
-        data,
+    return _send_file(
+        str(p),
+        as_attachment=True,
+        download_name=filename,
         mimetype="application/vnd.ms-excel.sheet.macroEnabled.12",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "Content-Length": str(len(data)),
-        }
     )
 
 
