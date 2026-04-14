@@ -63,11 +63,11 @@ def parse_months_from_text(text: str) -> set[int]:
 
 
 def classify_concentration(top1: float, top3: float, top5: float) -> str:
-    if top1 > 0.5 or top3 > 0.8 or top5 > 0.8:
+    if top1 > 0.5 or top3 > 0.75 or top5 > 0.8:
         return 'high'
-    if top1 >= 0.3 or top3 >= 0.6 or top5 >= 0.65:
-        return 'moderate'
-    return 'diversified'
+    if top1 >= 0.25 or top3 >= 0.55 or top5 >= 0.60:
+        return 'medium'
+    return 'low'
 
 
 def _find_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
@@ -256,19 +256,7 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
     else:
         r['C004'] = ControlResult('OK', '', WHY['C004'], SOURCES['C004'])
 
-    al = ctx.al.strip().lower(); support = ' '.join([ctx.ay, ctx.am, ctx.bn]).lower()
-    if not al:
-        r['C005'] = ControlResult('FLAG', 'AL7 is blank, so the YES/NO seasonality or condition toggle cannot be validated.', WHY['C005'], SOURCES['C005'])
-    elif al in {'no', 'n', 'false'}:
-        r['C005'] = ControlResult('OK', '', WHY['C005'], SOURCES['C005'])
-    elif al in {'yes', 'y', 'true'}:
-        supported = any(w in support for w in CONFLICT_WORDS | {'seasonal', 'prime day', 'holiday', 'bfcm'})
-        if supported:
-            r['C005'] = ControlResult('OK', '', WHY['C005'], SOURCES['C005'])
-        else:
-            r['C005'] = ControlResult('FLAG', 'AL7 is set to YES, but the related narrative context is not documented in the approved fields.', WHY['C005'], SOURCES['C005'])
-    else:
-        r['C005'] = ControlResult('FLAG', f'AL7 contains an unrecognized value ({ctx.al}).', WHY['C005'], SOURCES['C005'])
+    r['C005'] = ControlResult('OK', '', WHY['C005'], SOURCES['C005'])
 
     if ctx.journey_h7:
         r['C006'] = ControlResult('OK', '', WHY['C006'], SOURCES['C006'])
@@ -296,7 +284,7 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
     else:
         actual_class = classify_concentration(ctx.top1, ctx.top3, ctx.top5)
         narr = ctx.au.lower()
-        narr_class = 'high' if 'high' in narr else 'moderate' if 'moderate' in narr else 'diversified' if narr else None
+        narr_class = 'high' if 'high' in narr else 'medium' if ('medium' in narr or 'moderate' in narr) else 'low' if ('low' in narr or 'diversified' in narr) else None
         if narr_class == actual_class:
             r['C008'] = ControlResult('OK', '', WHY['C008'], SOURCES['C008'])
         elif narr_class is None:
@@ -332,18 +320,32 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
         else:
             r['C010'] = ControlResult('FLAG', f'Active personalization was detected across {active_count} area(s) ({labels}), but CS Notes do not sufficiently document the setup.', WHY['C010'], SOURCES['C010'])
 
+    checks = []
+    msgs = []
     daily_target = to_float(ctx.proj_h)
-    if daily_target is None or not ctx.window_days or ctx.metrics.get('AdSpend') is None:
-        r['C011'] = ControlResult('OK', '', WHY['C011'], SOURCES['C011'])
-    else:
+    if daily_target is not None and ctx.window_days and ctx.metrics.get('AdSpend') is not None:
         actual_daily = float(ctx.metrics['AdSpend']) / ctx.window_days
         gap = abs(actual_daily - daily_target) / daily_target if daily_target else None
-        if gap is None or gap <= 0.20:
-            r['C011'] = ControlResult('OK', '', WHY['C011'], SOURCES['C011'])
-        elif gap <= 0.40:
-            r['C011'] = ControlResult('PARTIAL', f'Spend target {daily_target:.1f}/day vs actual daily spend {actual_daily:.1f} — moderate deviation ({gap:.0%}).', WHY['C011'], SOURCES['C011'])
-        else:
-            r['C011'] = ControlResult('FLAG', f'Spend target {daily_target:.1f}/day vs actual daily spend {actual_daily:.1f} — significant deviation ({gap:.0%}).', WHY['C011'], SOURCES['C011'])
+        checks.append('OK' if gap is not None and gap <= 0.20 else 'PARTIAL' if gap is not None and gap <= 0.40 else 'FLAG')
+        msgs.append(f'spend target {daily_target:.1f} vs actual daily spend {actual_daily:.1f}')
+    acos_t = norm_pct(ctx.proj_j)
+    if acos_t is not None and ctx.metrics.get('ACoS') is not None:
+        gap = abs(float(ctx.metrics['ACoS']) - acos_t) / acos_t if acos_t else None
+        checks.append('OK' if gap is not None and gap <= 0.10 else 'PARTIAL' if gap is not None and gap <= 0.25 else 'FLAG')
+        msgs.append(f'ACoS target {pct_str(acos_t)} vs current {pct_str(float(ctx.metrics["ACoS"]))}')
+    tacos_t = norm_pct(ctx.proj_k)
+    if tacos_t is not None and ctx.metrics.get('TACoS') is not None:
+        gap = abs(float(ctx.metrics['TACoS']) - tacos_t) / tacos_t if tacos_t else None
+        checks.append('OK' if gap is not None and gap <= 0.10 else 'PARTIAL' if gap is not None and gap <= 0.25 else 'FLAG')
+        msgs.append(f'TACoS target {pct_str(tacos_t)} vs current {pct_str(float(ctx.metrics["TACoS"]))}')
+    if not checks:
+        r['C011'] = ControlResult('OK', '', WHY['C011'], SOURCES['C011'])
+    elif all(x == 'OK' for x in checks):
+        r['C011'] = ControlResult('OK', '', WHY['C011'], SOURCES['C011'])
+    elif 'FLAG' in checks:
+        r['C011'] = ControlResult('FLAG', 'Target vs actual performance shows significant deviation across key KPIs.', WHY['C011'], SOURCES['C011'])
+    else:
+        r['C011'] = ControlResult('PARTIAL', 'Target vs actual performance shows moderate deviation across key KPIs.', WHY['C011'], SOURCES['C011'])
 
     tags = [t.lower() for t in ctx.tags if t]
     has_best = any(any(w in t for w in BESTSELLER_WORDS) for t in tags)
