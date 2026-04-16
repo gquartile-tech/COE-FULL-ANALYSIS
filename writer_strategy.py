@@ -1,4 +1,3 @@
-import math
 import openpyxl
 import re
 import sys
@@ -219,6 +218,7 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str):
         'Parent ASIN':        'ParentASIN',
         'ASIN':               'asin',
         'Total Sales':        'TotalSales',
+        'Total Units Ordered':'UnitsOrdered',
         'Ad Spend':           'AdSpend',
         'TACoS':              'TACoS',
         'Ad Sales':           'AdSales',
@@ -240,7 +240,6 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str):
         'SD_Spend':           'SD_Spend',
         'Imported_Spend':     'Imported_Spend',
         'NonQuartile_Spend':  'NonQuartile_Spend',
-        'AOV':                'AOV',
         'TAG 1':              'Tag1',
         'TAG 2':              'Tag2',
         'TAG 3':              'Tag3',
@@ -249,6 +248,7 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str):
     }
 
     col22_map = {
+        'AOV':        'AOV',
         'PriceTier':  'PriceTier',
         'Brand':      'Brand',
         'Department': 'Department',
@@ -279,11 +279,6 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str):
             if header in col14_map:
                 val = rec.get(col14_map[header])
 
-            elif header == 'Total Units Ordered':
-                total_sales = rec.get('TotalSales') or 0
-                aov = rec.get('AOV') or 0
-                val = math.ceil(total_sales / aov) if aov else None
-
             elif header == 'Ad Sales (%)':
                 ad_s  = rec.get('AdSales') or 0
                 tot_s = rec.get('TotalSalesAll') or 1
@@ -297,9 +292,93 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str):
             elif header in col22_map:
                 val = cat.get(col22_map[header])
 
-            # Quartile One / Quartile Bulk — leave blank (calculated in sheet)
+            # Quartile One / Quartile Bulk — calculated via formula below
             if val is not None:
                 ws3.cell(row=row_idx, column=col_idx, value=val)
+
+        # ── AB: Quartile One = ATM + Manual_Q1 + OP ──────────────────────────
+        ws3.cell(row=row_idx, column=28, value=f'=SUM(O{row_idx}+Q{row_idx}+S{row_idx})')
+        # ── AC: Quartile Bulk = BA+BAK+SPT+CAT_SP+WATM+SB+SBV+SD+Imported+NonQ
+        ws3.cell(row=row_idx, column=29, value=f'=SUM(P{row_idx}+R{row_idx}+T{row_idx}+U{row_idx}+V{row_idx}+W{row_idx}+X{row_idx}+Y{row_idx}+Z{row_idx}+AA{row_idx})')
+
+    # ── conditional formatting applied to all populated rows ──────────────────
+    from openpyxl.formatting.rule import Rule, ColorScale, FormatObject, IconSet
+    from openpyxl.styles import Color
+    from openpyxl.styles.differential import DifferentialStyle
+    from openpyxl.styles import Font
+
+    last_row = 2 + len(asin_records)
+
+    def _dxf_font(hex_color):
+        return DifferentialStyle(font=Font(color=hex_color, bold=False))
+
+    def _cellIs_rule(operator, formula, hex_color, priority):
+        rule = Rule(type='cellIs', operator=operator, formula=formula, priority=priority)
+        rule.dxf = _dxf_font(hex_color)
+        return rule
+
+    # L — red font when Ad Sales (%) >= 1
+    ws3.conditional_formatting.add(
+        f'L3:L{last_row}',
+        _cellIs_rule('greaterThanOrEqual', ['1'], 'FF9C0006', 22)
+    )
+    # M — red font when Organic Sales (%) <= 0
+    ws3.conditional_formatting.add(
+        f'M3:M{last_row}',
+        _cellIs_rule('lessThanOrEqual', ['0'], 'FF9C0006', 20)
+    )
+    # O:AA — red font when spend = 0
+    ws3.conditional_formatting.add(
+        f'O3:AA{last_row}',
+        _cellIs_rule('equal', ['0'], 'FFFF0000', 15)
+    )
+    # AD — orange font when TAG 1 = "TAG MISSING"
+    ws3.conditional_formatting.add(
+        f'AD3:AD{last_row}',
+        _cellIs_rule('equal', ['"TAG MISSING"'], 'FF9C5700', 17)
+    )
+    # AE — red font when TAG 2 = "TAG MISSING"
+    ws3.conditional_formatting.add(
+        f'AE3:AE{last_row}',
+        _cellIs_rule('equal', ['"TAG MISSING"'], 'FF9C0006', 18)
+    )
+    # AE:AH — red font when = 0
+    ws3.conditional_formatting.add(
+        f'AE3:AH{last_row}',
+        _cellIs_rule('equal', ['0'], 'FF9C0006', 19)
+    )
+    # AE:AH — green font when = "Opportunity"
+    ws3.conditional_formatting.add(
+        f'AE3:AH{last_row}',
+        _cellIs_rule('equal', ['"Opportunity"'], 'FF006100', 21)
+    )
+    # AI:AM — red font when = "Unavailable"
+    ws3.conditional_formatting.add(
+        f'AI3:AM{last_row}',
+        _cellIs_rule('equal', ['"Unavailable"'], 'FF9C0006', 12)
+    )
+
+    # K — colorScale green → yellow → red (Tier)
+    from openpyxl.formatting.rule import ColorScaleRule
+    ws3.conditional_formatting.add(
+        f'K3:K{last_row}',
+        ColorScaleRule(
+            start_type='min',  start_color='63BE7B',
+            mid_type='percentile', mid_value=50, mid_color='FFEB84',
+            end_type='max',    end_color='F8696B',
+        )
+    )
+
+    # N — iconSet 3Symbols2 (Buy Box%)
+    from openpyxl.formatting.rule import IconSetRule
+    ws3.conditional_formatting.add(
+        f'N3:N{last_row}',
+        IconSetRule(
+            icon_style='3Symbols2',
+            type='percent',
+            values=[0, 70, 85],
+        )
+    )
 
     # ── save ──────────────────────────────────────────────────────────────────
     filename = f"{account_label} — Strategy Analysis {date_range}.xlsm"
@@ -315,3 +394,4 @@ if __name__ == "__main__":
         print("Usage: python writer_strategy.py <pre_analysis.xlsx> <template.xlsm> [output_dir]")
         sys.exit(1)
     write_strategy(sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "/mnt/user-data/outputs")
+# ── patch already applied inline in next version ──
