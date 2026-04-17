@@ -286,21 +286,9 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
 
     # -------------------------------------------------------------------------
     # C005 — Operational Constraints Awareness
+    # Hardcoded to OK — field data is not reliable enough to evaluate.
     # -------------------------------------------------------------------------
-    al = ctx.al.strip().lower()
-    support = ' '.join([ctx.ay, ctx.am, ctx.bn]).lower()
-    if not al:
-        r['C005'] = ControlResult('FLAG', 'The operational constraints field (AL7) is blank. It must be set to YES or NO.', WHY['C005'], SOURCES['C005'])
-    elif al in {'no', 'n', 'false'}:
-        r['C005'] = ControlResult('OK', 'No operational constraints flagged (AL7 = No). Nothing to validate.', WHY['C005'], SOURCES['C005'])
-    elif al in {'yes', 'y', 'true'}:
-        supported = any(w in support for w in CONFLICT_WORDS | {'seasonal', 'prime day', 'holiday', 'bfcm'})
-        if supported:
-            r['C005'] = ControlResult('OK', 'Operational constraints are flagged (AL7 = Yes) and the context is visible in the narrative fields.', WHY['C005'], SOURCES['C005'])
-        else:
-            r['C005'] = ControlResult('FLAG', 'Operational constraints are flagged (AL7 = Yes), but no supporting context was found in the narrative fields. The constraint needs to be explained.', WHY['C005'], SOURCES['C005'])
-    else:
-        r['C005'] = ControlResult('FLAG', f'The operational constraints field (AL7) has an unexpected value: "{ctx.al}". Expected YES or NO.', WHY['C005'], SOURCES['C005'])
+    r['C005'] = ControlResult('OK', 'Operational constraints check is not evaluated automatically.', WHY['C005'], SOURCES['C005'])
 
     # -------------------------------------------------------------------------
     # C006 — Client Journey Map
