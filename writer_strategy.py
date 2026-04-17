@@ -1,3 +1,4 @@
+import math
 import openpyxl
 import re
 import sys
@@ -218,7 +219,6 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str):
         'Parent ASIN':        'ParentASIN',
         'ASIN':               'asin',
         'Total Sales':        'TotalSales',
-        'Total Units Ordered':'UnitsOrdered',
         'Ad Spend':           'AdSpend',
         'TACoS':              'TACoS',
         'Ad Sales':           'AdSales',
@@ -226,7 +226,6 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str):
         'ACoS':               'ACoS',
         'Clicks':             'Clicks',
         'Tier':               'Tier',
-        'Buy Box%':           'Weighted_BuyBoxPercentage',
         'ATM_Spend':          'ATM_Spend',
         'BA_Spend':           'BA_Spend',
         'Manual_Q1_Spend':    'Manual_Q1_Spend',
@@ -240,6 +239,7 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str):
         'SD_Spend':           'SD_Spend',
         'Imported_Spend':     'Imported_Spend',
         'NonQuartile_Spend':  'NonQuartile_Spend',
+        'AOV':                'AOV',
         'TAG 1':              'Tag1',
         'TAG 2':              'Tag2',
         'TAG 3':              'Tag3',
@@ -248,7 +248,6 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str):
     }
 
     col22_map = {
-        'AOV':        'AOV',
         'PriceTier':  'PriceTier',
         'Brand':      'Brand',
         'Department': 'Department',
@@ -266,9 +265,6 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str):
         for cell in row:
             cell.value = None
 
-    # TotalSalesAll denominator from first ASIN record
-    total_sales_all = (asin_records[0].get('TotalSalesAll') or 1) if asin_records else 1
-
     for row_idx, rec in enumerate(asin_records, start=3):
         asin = rec.get('asin', '')
         cat  = cat_by_asin.get(asin, {})
@@ -279,15 +275,24 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str):
             if header in col14_map:
                 val = rec.get(col14_map[header])
 
+            elif header == 'Total Units Ordered':
+                total_sales = rec.get('TotalSales') or 0
+                aov = rec.get('AOV') or 0
+                val = math.ceil(total_sales / aov) if aov else None
+
             elif header == 'Ad Sales (%)':
                 ad_s  = rec.get('AdSales') or 0
-                tot_s = rec.get('TotalSalesAll') or 1
-                val   = round(ad_s / tot_s, 4)
+                tot_s = rec.get('TotalSales') or 0
+                val   = round(ad_s / tot_s, 4) if tot_s else None
 
             elif header == 'Organic Sales (%)':
                 ad_s  = rec.get('AdSales') or 0
-                tot_s = rec.get('TotalSalesAll') or 1
-                val   = round(1 - (ad_s / tot_s), 4)
+                tot_s = rec.get('TotalSales') or 0
+                val   = round(1 - (ad_s / tot_s), 4) if tot_s else None
+
+            elif header == 'Buy Box%':
+                raw = rec.get('Weighted_BuyBoxPercentage')
+                val = round(raw / 100, 4) if raw is not None else None
 
             elif header in col22_map:
                 val = cat.get(col22_map[header])
