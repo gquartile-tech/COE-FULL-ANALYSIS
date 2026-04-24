@@ -300,51 +300,76 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
 
     # -------------------------------------------------------------------------
     # C007 — Narrative Consistency
-    # If both constraints are missing, FLAG — constraint documentation is mandatory.
-    # If constraints exist, project targets must not be looser than the agreed limits.
+    # Validates 4 fields: ACoS constraint (O7), TACoS constraint (AX7),
+    # ACoS target (J7), TACoS target (K7).
+    # Missing fields: 1 missing → PARTIAL; 2+ missing → FLAG.
+    # Target vs constraint: any target > its constraint → FLAG regardless of how many fail.
+    # TACoS vs ACoS: TACoS must be strictly lower than ACoS for both the target pair
+    #   and the constraint pair. TACoS >= ACoS → FLAG.
+    #   Skipped silently if either field in the pair is missing (already captured above).
+    # All issues are listed in the what message. Worst-case status wins.
     # -------------------------------------------------------------------------
-    acos_c = norm_pct(ctx.o7)
-    tacos_c = norm_pct(ctx.ax7)
-    proj_acos = norm_pct(ctx.proj_j)
+    acos_c     = norm_pct(ctx.o7)
+    tacos_c    = norm_pct(ctx.ax7)
+    proj_acos  = norm_pct(ctx.proj_j)
     proj_tacos = norm_pct(ctx.proj_k)
 
-    if acos_c is None and tacos_c is None:
-        r['C007'] = ControlResult(
-            'FLAG',
-            'ACoS and TACoS constraints are not documented in the project dataset. Without agreed limits, it is not possible to confirm the account is being managed within the right boundaries.',
-            WHY['C007'], SOURCES['C007'],
+    issues_flag    = []
+    issues_partial = []
+
+    # — Missing field checks —
+    field_labels = [
+        (acos_c,     'ACoS constraint (O7)'),
+        (tacos_c,    'TACoS constraint (AX7)'),
+        (proj_acos,  'ACoS target (J7)'),
+        (proj_tacos, 'TACoS target (K7)'),
+    ]
+    missing_fields = [label for value, label in field_labels if value is None]
+    if len(missing_fields) >= 2:
+        issues_flag.append(f'Missing fields: {", ".join(missing_fields)}.')
+    elif len(missing_fields) == 1:
+        issues_partial.append(f'Missing field: {missing_fields[0]}.')
+
+    # — Target vs constraint checks —
+    if proj_acos is not None and acos_c is not None:
+        if proj_acos > acos_c + 1e-9:
+            issues_flag.append(
+                f'ACoS target ({pct_str(proj_acos)}) is higher than the agreed constraint ({pct_str(acos_c)}).'
+            )
+    if proj_tacos is not None and tacos_c is not None:
+        if proj_tacos > tacos_c + 1e-9:
+            issues_flag.append(
+                f'TACoS target ({pct_str(proj_tacos)}) is higher than the agreed constraint ({pct_str(tacos_c)}).'
+            )
+
+    # — TACoS vs ACoS checks (both pairs, skip silently if either field missing) —
+    if proj_tacos is not None and proj_acos is not None:
+        if proj_tacos >= proj_acos - 1e-9:
+            issues_flag.append(
+                f'TACoS target ({pct_str(proj_tacos)}) is not lower than ACoS target ({pct_str(proj_acos)}). TACoS must always be below ACoS.'
+            )
+    if tacos_c is not None and acos_c is not None:
+        if tacos_c >= acos_c - 1e-9:
+            issues_flag.append(
+                f'TACoS constraint ({pct_str(tacos_c)}) is not lower than ACoS constraint ({pct_str(acos_c)}). TACoS must always be below ACoS.'
+            )
+
+    # — Resolve status and build message —
+    all_issues = issues_flag + issues_partial
+    if not all_issues:
+        what = (
+            f'All four fields are documented and consistent. '
+            f'ACoS: target {pct_str(proj_acos)} within constraint {pct_str(acos_c)}. '
+            f'TACoS: target {pct_str(proj_tacos)} within constraint {pct_str(tacos_c)}. '
+            f'TACoS is correctly below ACoS across both pairs.'
         )
+        r['C007'] = ControlResult('OK', what, WHY['C007'], SOURCES['C007'])
+    elif issues_flag:
+        what = ' | '.join(all_issues)
+        r['C007'] = ControlResult('FLAG', what, WHY['C007'], SOURCES['C007'])
     else:
-        checks = []
-        for target, constraint in [(proj_acos, acos_c), (proj_tacos, tacos_c)]:
-            if target is None or constraint is None:
-                checks.append(None)
-            else:
-                checks.append(target <= constraint + 1e-9)
-        if checks == [True, True]:
-            r['C007'] = ControlResult(
-                'OK',
-                f'Project targets are within the agreed constraints. ACoS: target {pct_str(proj_acos)} vs limit {pct_str(acos_c)}. TACoS: target {pct_str(proj_tacos)} vs limit {pct_str(tacos_c)}.',
-                WHY['C007'], SOURCES['C007'],
-            )
-        elif any(v is False for v in checks) and any(v is True for v in checks):
-            r['C007'] = ControlResult(
-                'PARTIAL',
-                f'One target is outside the agreed constraint. ACoS: target {pct_str(proj_acos)} vs limit {pct_str(acos_c)}. TACoS: target {pct_str(proj_tacos)} vs limit {pct_str(tacos_c)}.',
-                WHY['C007'], SOURCES['C007'],
-            )
-        elif any(v is False for v in checks):
-            r['C007'] = ControlResult(
-                'FLAG',
-                f'Project targets are looser than the agreed constraints. ACoS: target {pct_str(proj_acos)} vs limit {pct_str(acos_c)}. TACoS: target {pct_str(proj_tacos)} vs limit {pct_str(tacos_c)}.',
-                WHY['C007'], SOURCES['C007'],
-            )
-        else:
-            r['C007'] = ControlResult(
-                'PARTIAL',
-                f'Constraint alignment could not be fully confirmed. ACoS: target {pct_str(proj_acos)} vs limit {pct_str(acos_c)}. TACoS: target {pct_str(proj_tacos)} vs limit {pct_str(tacos_c)}.',
-                WHY['C007'], SOURCES['C007'],
-            )
+        what = ' | '.join(all_issues)
+        r['C007'] = ControlResult('PARTIAL', what, WHY['C007'], SOURCES['C007'])
 
     # -------------------------------------------------------------------------
     # C008 — Sales Concentration Matches Account Story
@@ -422,17 +447,24 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
 
     # -------------------------------------------------------------------------
     # C012 — Tagging / Segmentation Logic Clear
+    # Requires both a bestseller label and a category/segment label for OK.
+    # PARTIAL: one of the two is missing — message names which one.
+    # FLAG: neither is present.
     # -------------------------------------------------------------------------
     tags = [t.lower() for t in ctx.tags if t]
     has_best = any(any(w in t for w in BESTSELLER_WORDS) for t in tags)
     has_category = any(t not in {'', 'none'} and not any(w in t for w in BESTSELLER_WORDS | SEGMENTATION_WORDS) for t in tags)
     has_segment = any(any(w in t for w in SEGMENTATION_WORDS) for t in tags)
-    if has_best and has_category:
-        r['C012'] = ControlResult('OK', 'Campaign tags show clear product segmentation with bestseller and category labels identified.', WHY['C012'], SOURCES['C012'])
-    elif has_category or has_segment:
-        r['C012'] = ControlResult('PARTIAL', 'Some product tagging is present, but the segmentation is incomplete. Bestseller or category labels are not fully identifiable.', WHY['C012'], SOURCES['C012'])
+    has_cat_or_seg = has_category or has_segment
+
+    if has_best and has_cat_or_seg:
+        r['C012'] = ControlResult('OK', 'Campaign tags show clear product segmentation with both a bestseller label and a category or performance tier label identified.', WHY['C012'], SOURCES['C012'])
+    elif has_best and not has_cat_or_seg:
+        r['C012'] = ControlResult('PARTIAL', 'A bestseller label was found in the campaign tags, but no category or performance tier label was detected. The second tagging dimension is missing.', WHY['C012'], SOURCES['C012'])
+    elif has_cat_or_seg and not has_best:
+        r['C012'] = ControlResult('PARTIAL', 'A category or performance tier label was found in the campaign tags, but no bestseller label was detected. The bestseller tagging dimension is missing.', WHY['C012'], SOURCES['C012'])
     else:
-        r['C012'] = ControlResult('FLAG', 'No clear product tagging or segmentation was found in the campaign tag fields. The team cannot tell how the portfolio is being prioritized.', WHY['C012'], SOURCES['C012'])
+        r['C012'] = ControlResult('FLAG', 'Neither a bestseller label nor a category or performance tier label was found in the campaign tag fields. Both tagging dimensions are missing — the team cannot tell how the portfolio is being prioritized.', WHY['C012'], SOURCES['C012'])
 
     # -------------------------------------------------------------------------
     # C013 / C014 — Manual on-call controls
@@ -444,31 +476,30 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
 
 
 def build_summary(ctx: DatabricksContext, results: Dict[str, ControlResult]) -> dict:
-    import warnings
-    budget_constraint = None
-    text = ' '.join([ctx.ay, ctx.am, ctx.bn])
-    m = re.search(r'([0-9]{1,3}(?:,[0-9]{3})+|[0-9]+(?:\.[0-9]+)?k)\s*(?:monthly|/month|per month)', text, re.I)
-    if m:
-        budget_constraint = to_float(m.group(1))
-    else:
-        warnings.warn(
-            f"build_summary: budget_constraint could not be extracted from narrative fields for {ctx.hash_name}. "
-            "Budget will show as 'Not documented' in the output.",
-            stacklevel=2,
-        )
-    if m:
-        budget_constraint = to_float(m.group(1))
     return {
         'primary_objective': build_primary_objective(ctx, results),
-        'customization_context': 'Not evaluated — CS Notes assessed during QR call.',
-        'monthly_budget': monthly_budget_from_daily(ctx),
+        'customization_context': clean_text(ctx.t7) if ctx.t7 else 'Not documented.',
         'acos_objective': norm_pct(ctx.proj_j),
         'tacos_objective': norm_pct(ctx.proj_k),
         'acos_constraint': norm_pct(ctx.o7),
         'tacos_constraint': norm_pct(ctx.ax7),
-        'budget_constraint': budget_constraint,
+        'budget_constraint': _extract_budget_constraint(ctx),
         'primary_kpi': ctx.bw if ctx.bw else 'Not documented',
     }
+
+
+def _extract_budget_constraint(ctx: DatabricksContext):
+    import warnings
+    text = ' '.join([ctx.ay, ctx.am, ctx.bn])
+    m = re.search(r'([0-9]{1,3}(?:,[0-9]{3})+|[0-9]+(?:\.[0-9]+)?k)\s*(?:monthly|/month|per month)', text, re.I)
+    if m:
+        return to_float(m.group(1))
+    warnings.warn(
+        f"build_summary: budget_constraint could not be extracted from narrative fields for {ctx.hash_name}. "
+        "Budget will show as 'Not documented' in the output.",
+        stacklevel=2,
+    )
+    return None
 
 
 def score_grade(score: float) -> str:
