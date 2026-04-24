@@ -27,7 +27,6 @@ def write_mastery_output(template_path, output_path, summary, results, penalty, 
 
     ws_main['C11'] = summary['primary_objective']
     ws_main['C13'] = summary.get('customization_context', '')
-    ws_main['C16'] = money_str(summary['monthly_budget']) if summary['monthly_budget'] is not None else 'Monthly budget target not available.'
     ws_main['B18'] = pct_str(summary['acos_objective'])
     ws_main['B19'] = pct_str(summary['tacos_objective'])
     ws_main['B22'] = pct_str(summary['acos_constraint'])
@@ -35,7 +34,7 @@ def write_mastery_output(template_path, output_path, summary, results, penalty, 
     ws_main['B24'] = money_str(summary['budget_constraint'])
     ws_main['E23'] = summary['primary_kpi']
 
-    for cell in ['C11', 'C13', 'C16', 'D8']:
+    for cell in ['C11', 'C13', 'D8']:
         ws_main[cell].alignment = Alignment(wrap_text=True, vertical='top')
 
     # ── Page 2: Reference tab — STATUS, What We Saw, Why It Matters only ──────
