@@ -32,7 +32,7 @@ def find_header_row(ws, max_scan=10):
 
 
 def tab_to_dict(ws):
-    """Single-data-row tab → dict. Auto-detects header row."""
+    """Single-data-row tab → dict. Auto-detects header row. Returns first data row."""
     header_row = find_header_row(ws)
     if header_row is None:
         return {}
@@ -45,6 +45,68 @@ def tab_to_dict(ws):
         if h is not None and i < len(data_row):
             result[h] = data_row[i]
     return result
+
+
+def tab_to_records_full(ws):
+    """Multi-row tab → list of dicts including all rows. Auto-detects header row."""
+    header_row = find_header_row(ws)
+    if header_row is None:
+        return []
+    headers = None
+    records = []
+    for i, row in enumerate(ws.iter_rows(min_row=header_row, values_only=True), header_row):
+        if headers is None:
+            headers = list(row)
+            continue
+        if not any(row):
+            continue
+        rec = {headers[j]: row[j] for j in range(len(headers)) if headers[j] is not None}
+        records.append(rec)
+    return records
+
+
+def _latest_record(records: list, modstamp_key: str = 'SystemModstamp') -> dict:
+    """Return the record with the most recent SystemModstamp. Falls back to first record."""
+    if not records:
+        return {}
+    if len(records) == 1:
+        return records[0]
+    # Try to find modstamp column (case-insensitive, ignoring underscores)
+    import re as _re
+    def _norm(s): return _re.sub(r'[\s_]', '', str(s)).lower()
+    modstamp_col = next(
+        (k for k in records[0].keys() if 'modstamp' in _norm(k) or 'systemmod' in _norm(k)),
+        None
+    )
+    if modstamp_col:
+        try:
+            def _ts(r):
+                import pandas as _pd
+                v = r.get(modstamp_col)
+                if v is None:
+                    return _pd.NaT
+                return _pd.to_datetime(v, errors='coerce')
+            return max(records, key=_ts)
+        except Exception:
+            pass
+    return records[0]
+
+
+def _filter_by_advertiser(records: list, account_id: str) -> list:
+    """Filter records to those whose Advertiser_ID_c matches account_id."""
+    if not account_id or not records:
+        return records
+    import re as _re
+    def _norm(s): return _re.sub(r'[\s_]', '', str(s)).lower()
+    adv_col = next(
+        (k for k in records[0].keys() if _norm(k) in ('advertiserid', 'advertiseridс', 'advertiser_idc')
+         or 'advertiserid' in _norm(k)),
+        None
+    )
+    if not adv_col:
+        return records
+    filtered = [r for r in records if str(r.get(adv_col, '')).strip() == str(account_id).strip()]
+    return filtered if filtered else records
 
 
 def tab_to_records(ws):
@@ -90,8 +152,8 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str):
     # ── tab 55 ────────────────────────────────────────────────────────────────
     d55 = tab_to_dict(pa['55_Salesforce_Consolidated_PreA'])
 
-    # ── tab 38 (fallback fields) ──────────────────────────────────────────────
-    d38 = tab_to_dict(pa['38_Client_Success_Insights_Repo'])
+    # ── tab 38 (fallback fields) — latest row by SystemModstamp ──────────────
+    d38 = _latest_record(tab_to_records_full(pa['38_Client_Success_Insights_Repo']))
 
     # ── tab 37 gong ───────────────────────────────────────────────────────────
     gong_records = tab_to_records(pa['37_Gong_Call_Insights_for_Sales'])
@@ -100,8 +162,10 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str):
     # ── tab 14 ASIN data ──────────────────────────────────────────────────────
     asin_records = tab_to_records(pa['14_Campaign_Performance_by_Adve'])
 
-    # ── tab 54 project dataset ──────────────────────────────────────────────
-    d54 = tab_to_dict(pa['54_Project_Dataset_on_SF'])
+    # ── tab 54 project dataset — filter by Advertiser_ID, latest by Modstamp ─
+    _d54_records = tab_to_records_full(pa['54_Project_Dataset_on_SF'])
+    _d54_filtered = _filter_by_advertiser(_d54_records, profile_id)
+    d54 = _latest_record(_d54_filtered)
 
     # ── tab 22 catalogue ─────────────────────────────────────────────────────
     cat_records  = tab_to_records(pa['22_Catalogue_Details'])
