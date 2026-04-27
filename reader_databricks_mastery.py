@@ -48,6 +48,7 @@ class DatabricksContext:
     proj_i: object = None
     proj_j: object = None
     proj_k: object = None
+    proj_cs_notes: str = ''
     df02: Optional[pd.DataFrame] = None
     df07: Optional[pd.DataFrame] = None
     df14: Optional[pd.DataFrame] = None
@@ -184,6 +185,52 @@ def _get_df_from_wb(wb, sheet_prefix: str) -> Optional[pd.DataFrame]:
         return None
 
 
+def _ws_to_df(ws) -> Optional[pd.DataFrame]:
+    """Convert an already-open worksheet to a DataFrame using DEFAULT_HEADER_ROW."""
+    try:
+        rows = list(ws.iter_rows(values_only=True))
+        if len(rows) <= DEFAULT_HEADER_ROW:
+            return None
+        headers = [str(c) if c is not None else f'Unnamed_{i}' for i, c in enumerate(rows[DEFAULT_HEADER_ROW])]
+        data = rows[DEFAULT_HEADER_ROW + 1:]
+        df = pd.DataFrame(data, columns=headers)
+        df = df.dropna(how='all')
+        return df if not df.empty else None
+    except Exception:
+        return None
+
+
+def _latest_row_by_modstamp(df: pd.DataFrame) -> pd.Series:
+    """
+    Return the row with the most recent SystemModstamp value.
+    Falls back to the first row if the column is absent or unparseable.
+    """
+    modstamp_col = next(
+        (c for c in df.columns if 'systemmod' in str(c).lower() or 'modstamp' in str(c).lower()),
+        None
+    )
+    if modstamp_col:
+        try:
+            df = df.copy()
+            df['_ts'] = pd.to_datetime(df[modstamp_col], errors='coerce')
+            valid = df.dropna(subset=['_ts'])
+            if not valid.empty:
+                return valid.loc[valid['_ts'].idxmax()].drop(labels=['_ts'])
+        except Exception:
+            pass
+    return df.iloc[0]
+
+
+def _find_col_name(df: pd.DataFrame, *candidates: str) -> Optional[str]:
+    """Return the first column name that matches any candidate (case-insensitive, ignoring _ and spaces)."""
+    norm = {re.sub(r'[\s_]', '', str(c)).lower(): c for c in df.columns}
+    for cand in candidates:
+        key = re.sub(r'[\s_]', '', cand).lower()
+        if key in norm:
+            return norm[key]
+    return None
+
+
 def latest_gap_days(call_df: Optional[pd.DataFrame]):
     if call_df is None or call_df.empty or 'Gong__Call_End__c' not in call_df.columns:
         return None, None, None
@@ -221,30 +268,70 @@ def load_databricks_context(path: str) -> DatabricksContext:
         ctx.df34 = _get_df_from_wb(wb, '34_Product_Level_ACoS')
         ctx.df35 = _get_df_from_wb(wb, '35_Campaign_Level_ACoS')
 
-        # --- Single cells from 38_Client_Success_Insights_Repo ---
+        # --- Tab 38: Client Success Insights — latest row by SystemModstamp ---
         ws38 = _get_ws(wb, '38_Client_Success_Insights_Repo')
         if ws38 is None:
             raise ValueError('Sheet starting with 38_Client_Success_Insights_Repo not found in export.')
-        ctx.ay  = clean_text(ws38['AY7'].value)
-        ctx.am  = clean_text(ws38['AM7'].value)
-        ctx.bn  = clean_text(ws38['BN7'].value)
-        ctx.al  = clean_text(ws38['AL7'].value)
-        ctx.au  = clean_text(ws38['AU7'].value)
-        ctx.bw  = clean_text(ws38['BW7'].value).upper()
-        ctx.o7  = ws38['O7'].value
-        ctx.ax7 = ws38['AX7'].value
+        df38 = _ws_to_df(ws38)
+        if df38 is None or df38.empty:
+            raise ValueError('38_Client_Success_Insights_Repo has no data rows.')
+        row38 = _latest_row_by_modstamp(df38)
+        # Map by column position (headers may vary); fall back to positional index.
+        # Original cells: AY7, AM7, BN7, AL7, AU7, BW7, O7, AX7
+        # Column letters are 0-based index: A=0, O=14, AL=37, AM=38, AU=46,
+        # AX=49, AY=50, BN=65, BW=75
+        def _pos(letter: str):
+            letter = letter.upper()
+            idx = 0
+            for ch in letter:
+                idx = idx * 26 + (ord(ch) - ord('A') + 1)
+            return idx - 1  # 0-based
 
-        # --- Single cells from other sheets ---
+        def _cell_val(row: pd.Series, letter: str):
+            i = _pos(letter)
+            return row.iloc[i] if i < len(row) else None
+
+        ctx.ay  = clean_text(_cell_val(row38, 'AY'))
+        ctx.am  = clean_text(_cell_val(row38, 'AM'))
+        ctx.bn  = clean_text(_cell_val(row38, 'BN'))
+        ctx.al  = clean_text(_cell_val(row38, 'AL'))
+        ctx.au  = clean_text(_cell_val(row38, 'AU'))
+        ctx.bw  = clean_text(_cell_val(row38, 'BW')).upper()
+        ctx.o7  = _cell_val(row38, 'O')
+        ctx.ax7 = _cell_val(row38, 'AX')
+
+        # --- Tab 39 ---
         ws39 = _get_ws(wb, '39_Client_Journey_Insights_Data')
         ctx.journey_h7 = ws39['H7'].value if ws39 is not None else None
 
+        # --- Tab 54: Project Dataset — filter by Advertiser_ID, latest by Modstamp ---
         ws54 = _get_ws(wb, '54_Project_Dataset_on_SF')
         if ws54 is None:
             raise ValueError('Sheet starting with 54_Project_Dataset_on_SF not found in export.')
-        ctx.proj_h = ws54['H7'].value
-        ctx.proj_i = ws54['I7'].value
-        ctx.proj_j = ws54['J7'].value
-        ctx.proj_k = ws54['K7'].value
+        df54 = _ws_to_df(ws54)
+        if df54 is None or df54.empty:
+            raise ValueError('54_Project_Dataset_on_SF has no data rows.')
+
+        # Filter to rows matching this export's Advertiser_ID
+        adv_col = _find_col_name(df54, 'Advertiser_ID_c', 'Advertiser_ID', 'AdvertiserID')
+        if adv_col and ctx.account_id:
+            matched = df54[df54[adv_col].astype(str).str.strip() == str(ctx.account_id).strip()]
+            df54_filtered = matched if not matched.empty else df54
+        else:
+            df54_filtered = df54
+
+        # Pick latest row by SystemModstamp
+        row54 = _latest_row_by_modstamp(df54_filtered)
+
+        def _col54(letter: str):
+            i = _pos(letter)
+            return row54.iloc[i] if i < len(row54) else None
+
+        ctx.proj_h        = _col54('H')
+        ctx.proj_i        = _col54('I')
+        ctx.proj_j        = _col54('J')
+        ctx.proj_k        = _col54('K')
+        ctx.proj_cs_notes = clean_text(_col54('T'))
 
     finally:
         try:
