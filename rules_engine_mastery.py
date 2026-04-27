@@ -408,7 +408,7 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
     # C010 — Customizations Documented & Justified
     # -------------------------------------------------------------------------
     active_types = detect_personalizations(ctx)
-    documented_count, matched = documented_personalizations(ctx.t7 if hasattr(ctx, "t7") else "", active_types)
+    documented_count, matched = documented_personalizations(ctx.proj_cs_notes, active_types)
     active_count = len(active_types)
     if active_count == 0:
         r['C010'] = ControlResult('OK', 'No active framework customizations were detected. Nothing to document.', WHY['C010'], SOURCES['C010'])
@@ -478,7 +478,7 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
 def build_summary(ctx: DatabricksContext, results: Dict[str, ControlResult]) -> dict:
     return {
         'primary_objective': build_primary_objective(ctx, results),
-        'customization_context': clean_text(ctx.t7) if ctx.t7 else 'Not documented.',
+        'customization_context': ctx.proj_cs_notes if ctx.proj_cs_notes else 'No notes documented.',
         'acos_objective': norm_pct(ctx.proj_j),
         'tacos_objective': norm_pct(ctx.proj_k),
         'acos_constraint': norm_pct(ctx.o7),
