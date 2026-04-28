@@ -316,18 +316,23 @@ def load_databricks_context(path: str) -> DatabricksContext:
             raise ValueError('Sheet starting with 54_Project_Dataset_on_SF not found in export.')
         df54 = _ws_to_df(ws54)
         if df54 is None or df54.empty:
-            raise ValueError('54_Project_Dataset_on_SF has no data rows.')
-
-        # Filter to rows matching this export's Advertiser_ID
-        adv_col = _find_col_name(df54, 'Advertiser_ID_c', 'Advertiser_ID', 'AdvertiserID')
-        if adv_col and ctx.account_id:
-            matched = df54[df54[adv_col].astype(str).str.strip() == str(ctx.account_id).strip()]
-            df54_filtered = matched if not matched.empty else df54
+            import warnings
+            warnings.warn(
+                f'54_Project_Dataset_on_SF has no data rows for {path}. '
+                'Project dataset fields will be treated as missing.'
+            )
+            row54 = pd.Series([None] * 200)
         else:
-            df54_filtered = df54
+            # Filter to rows matching this export's Advertiser_ID
+            adv_col = _find_col_name(df54, 'Advertiser_ID_c', 'Advertiser_ID', 'AdvertiserID')
+            if adv_col and ctx.account_id:
+                matched = df54[df54[adv_col].astype(str).str.strip() == str(ctx.account_id).strip()]
+                df54_filtered = matched if not matched.empty else df54
+            else:
+                df54_filtered = df54
 
-        # Pick latest row by SystemModstamp
-        row54 = _latest_row_by_modstamp(df54_filtered)
+            # Pick latest row by SystemModstamp
+            row54 = _latest_row_by_modstamp(df54_filtered)
 
         def _col54(letter: str):
             i = _pos(letter)
