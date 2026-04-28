@@ -274,8 +274,14 @@ def load_databricks_context(path: str) -> DatabricksContext:
             raise ValueError('Sheet starting with 38_Client_Success_Insights_Repo not found in export.')
         df38 = _ws_to_df(ws38)
         if df38 is None or df38.empty:
-            raise ValueError('38_Client_Success_Insights_Repo has no data rows.')
-        row38 = _latest_row_by_modstamp(df38)
+            import warnings
+            warnings.warn(
+                f'38_Client_Success_Insights_Repo has no data rows for {path}. '
+                'Client success fields will be treated as missing.'
+            )
+            row38 = pd.Series([None] * 200)
+        else:
+            row38 = _latest_row_by_modstamp(df38)
         # Map by column position (headers may vary); fall back to positional index.
         # Original cells: AY7, AM7, BN7, AL7, AU7, BW7, O7, AX7
         # Column letters are 0-based index: A=0, O=14, AL=37, AM=38, AU=46,
