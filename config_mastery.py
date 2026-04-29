@@ -59,8 +59,8 @@ WHY = {
 }
 
 SOURCES = {
-    'C001': '38_Client_Success_Insights_Repo!AY7',
-    'C002': '38_Client_Success_Insights_Repo!AM7',
+    'C001': '38_Client_Success_Insights_Repo!AM7',
+    'C002': '38_Client_Success_Insights_Repo!AY7',
     'C003': '38_Client_Success_Insights_Repo!BN7',
     'C004': 'Health seasonality logic on AM7 + narrative cross-check in AY7 / BN7 / T7',
     'C005': '38_Client_Success_Insights_Repo!AL7 + narrative cross-check',
