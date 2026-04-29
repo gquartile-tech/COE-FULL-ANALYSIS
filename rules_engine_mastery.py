@@ -178,12 +178,12 @@ def build_primary_objective(ctx: DatabricksContext, results: Dict[str, ControlRe
     if not ay and not am:
         return 'Primary objective is not clearly documented.'
     if results['C002'].status == 'FLAG':
-        return f"Primary objective is documented as {trim(ay or am, 180)}, but strategic context is incomplete."
+        return f"Primary objective is documented as {trim(am or ay, 180)}, but strategic context is incomplete."
     if results['C002'].status == 'PARTIAL':
-        return f"The primary objective is to {trim(ay or am, 160)}, but the supporting KPI, timeframe, or constraint context is incomplete."
+        return f"The primary objective is to {trim(am or ay, 160)}, but the supporting KPI, timeframe, or constraint context is incomplete."
     if ay and am:
-        return f"The primary objective is to {trim(ay, 140)}, with supporting context that {trim(am, 220)}"
-    return f"The primary objective is to {trim(ay or am, 220)}"
+        return f"The primary objective is to {trim(am, 140)}, with supporting context that {trim(ay, 220)}"
+    return f"The primary objective is to {trim(am or ay, 220)}"
 
 
 def _fallback_results() -> Dict[str, ControlResult]:
@@ -208,31 +208,13 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
 
     # -------------------------------------------------------------------------
     # C001 — Objective Clearly Defined
-    # -------------------------------------------------------------------------
-    txt = ctx.ay
-    if not txt:
-        r['C001'] = ControlResult('FLAG', 'No primary objective is written in the account notes (AY7).', WHY['C001'], SOURCES['C001'])
-    else:
-        score = sum([
-            has_any(txt, OBJECTIVE_WORDS),
-            has_any(txt, KPI_WORDS | {'awareness', 'ranking', 'market share'}),
-            any(w in txt.lower() for w in ['gain', 'grow', 'increase', 'improve', 'stabilize', 'maintain', 'scale', 'accelerate']),
-        ])
-        if score >= 3:
-            r['C001'] = ControlResult('OK', 'Primary objective is documented and linked to a clear business outcome.', WHY['C001'], SOURCES['C001'])
-        elif score == 2:
-            r['C001'] = ControlResult('PARTIAL', 'Objective is written, but it is not clearly linked to a measurable KPI or a specific business result.', WHY['C001'], SOURCES['C001'])
-        else:
-            r['C001'] = ControlResult('FLAG', 'Objective is written, but the language is too vague to use as a clear direction for this account.', WHY['C001'], SOURCES['C001'])
-
-    # -------------------------------------------------------------------------
-    # C002 — Objective vs Near-Term Alignment
+    # Reads AM7 — the objective context field.
     # Timeframe is a hard gate — without it the result cannot be OK.
     # Requires all 5 dimensions for OK; at least 3 for PARTIAL.
     # -------------------------------------------------------------------------
     txt = ctx.am
     if not txt:
-        r['C002'] = ControlResult('FLAG', 'The objective context field (AM7) is empty. There is no supporting detail for the primary objective.', WHY['C002'], SOURCES['C002'])
+        r['C001'] = ControlResult('FLAG', 'The objective context field (AM7) is empty. There is no supporting detail for the primary objective.', WHY['C001'], SOURCES['C001'])
     else:
         dims = {
             'objective':  has_any(txt, OBJECTIVE_WORDS),
@@ -245,13 +227,33 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
         missing = [k for k, v in dims.items() if not v]
         has_timeframe = dims['timeframe']
         if n == 5:
-            r['C002'] = ControlResult('OK', 'Objective context covers all required elements: goal, KPI, constraint, timeframe, and narrative depth.', WHY['C002'], SOURCES['C002'])
+            r['C001'] = ControlResult('OK', 'Objective context covers all required elements: goal, KPI, constraint, timeframe, and narrative depth.', WHY['C001'], SOURCES['C001'])
         elif n >= 3 and has_timeframe:
-            r['C002'] = ControlResult('PARTIAL', f'Objective context is written but some elements are missing: {", ".join(missing)}.', WHY['C002'], SOURCES['C002'])
+            r['C001'] = ControlResult('PARTIAL', f'Objective context is written but some elements are missing: {", ".join(missing)}.', WHY['C001'], SOURCES['C001'])
         elif n >= 3 and not has_timeframe:
-            r['C002'] = ControlResult('PARTIAL', f'Objective context is written but has no timeframe or near-term reference. Also missing: {", ".join([m for m in missing if m != "timeframe"])}.', WHY['C002'], SOURCES['C002'])
+            r['C001'] = ControlResult('PARTIAL', f'Objective context is written but has no timeframe or near-term reference. Also missing: {", ".join([m for m in missing if m != "timeframe"])}.', WHY['C001'], SOURCES['C001'])
         else:
-            r['C002'] = ControlResult('FLAG', f'Objective context does not have enough detail to review near-term alignment. Missing elements: {", ".join(missing)}.', WHY['C002'], SOURCES['C002'])
+            r['C001'] = ControlResult('FLAG', f'Objective context does not have enough detail to review near-term alignment. Missing elements: {", ".join(missing)}.', WHY['C001'], SOURCES['C001'])
+
+    # -------------------------------------------------------------------------
+    # C002 — Objective vs Near-Term Alignment
+    # Reads AY7 — the primary objective field.
+    # -------------------------------------------------------------------------
+    txt = ctx.ay
+    if not txt:
+        r['C002'] = ControlResult('FLAG', 'No primary objective is written in the account notes (AY7).', WHY['C002'], SOURCES['C002'])
+    else:
+        score = sum([
+            has_any(txt, OBJECTIVE_WORDS),
+            has_any(txt, KPI_WORDS | {'awareness', 'ranking', 'market share'}),
+            any(w in txt.lower() for w in ['gain', 'grow', 'increase', 'improve', 'stabilize', 'maintain', 'scale', 'accelerate']),
+        ])
+        if score >= 3:
+            r['C002'] = ControlResult('OK', 'Primary objective is documented and linked to a clear business outcome.', WHY['C002'], SOURCES['C002'])
+        elif score == 2:
+            r['C002'] = ControlResult('PARTIAL', 'Objective is written, but it is not clearly linked to a measurable KPI or a specific business result.', WHY['C002'], SOURCES['C002'])
+        else:
+            r['C002'] = ControlResult('FLAG', 'Objective is written, but the language is too vague to use as a clear direction for this account.', WHY['C002'], SOURCES['C002'])
 
     # -------------------------------------------------------------------------
     # C003 — Account Challenges Documented
