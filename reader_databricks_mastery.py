@@ -166,27 +166,24 @@ def _get_ws(wb, prefix: str):
     return wb[name] if name else None
 
 
-def _get_df_from_wb(wb, sheet_prefix: str) -> Optional[pd.DataFrame]:
-    """Read a sheet from an already-open workbook into a DataFrame using prefix matching."""
-    sheet = _find_sheet(wb, sheet_prefix)
+def _get_df_from_xl(xl: pd.ExcelFile, sheet_prefix: str) -> Optional[pd.DataFrame]:
+    """Read a sheet from an open pd.ExcelFile handle into a DataFrame using prefix matching.
+    Uses xl.parse() so the file is never re-opened — critical for large accounts."""
+    sheet = next((s for s in xl.sheet_names if s.startswith(sheet_prefix)), None)
     if sheet is None:
         return None
     try:
         header_row = SHEET_HEADER_ROW.get(sheet_prefix, DEFAULT_HEADER_ROW)
-        ws = wb[sheet]
-        rows = list(ws.iter_rows(values_only=True))
-        if len(rows) <= header_row:
-            return None
-        headers = [str(c) if c is not None else f'Unnamed_{i}' for i, c in enumerate(rows[header_row])]
-        data = rows[header_row + 1:]
-        df = pd.DataFrame(data, columns=headers)
+        df = xl.parse(sheet, header=header_row)
         return df
     except Exception:
         return None
 
 
 def _ws_to_df(ws) -> Optional[pd.DataFrame]:
-    """Convert an already-open worksheet to a DataFrame using DEFAULT_HEADER_ROW."""
+    """Convert an already-open openpyxl worksheet to a DataFrame.
+    Only used for sheets that need single-cell access (38, 39, 54).
+    For bulk DataFrame sheets use _get_df_from_xl instead."""
     try:
         rows = list(ws.iter_rows(values_only=True))
         if len(rows) <= DEFAULT_HEADER_ROW:
@@ -243,7 +240,29 @@ def latest_gap_days(call_df: Optional[pd.DataFrame]):
 
 
 def load_databricks_context(path: str) -> DatabricksContext:
-    # Open the workbook exactly once — all reads go through this handle.
+    # Two-pass strategy to minimise memory on large accounts:
+    #   Pass 1 — pd.ExcelFile for all bulk DataFrame sheets (pandas engine,
+    #             memory-efficient, never re-opens the file)
+    #   Pass 2 — openpyxl read_only=True for header + single-cell reads
+    #             (sheets 38, 39, 54 and account header from 01)
+
+    # --- Pass 1: bulk DataFrames via pandas ---
+    with pd.ExcelFile(path) as xl:
+        df02 = _get_df_from_xl(xl, '02_Date_Range_KPIs__Date_Range_')
+        df07 = _get_df_from_xl(xl, '07_KPIs_by_Parent_ASIN_by_Month')
+        df14 = _get_df_from_xl(xl, '14_Campaign_Performance_by_Adve')
+        df37 = _get_df_from_xl(xl, '37_Gong_Call_Insights_for_Sales')
+        df26 = _get_df_from_xl(xl, '26_Unmanaged_ASIN')
+        df27 = _get_df_from_xl(xl, '27_Timeframe_Boost')
+        df28 = _get_df_from_xl(xl, '28_Unmanaged_Budget')
+        df29 = _get_df_from_xl(xl, '29_Negative_Keywords__Global')
+        df31 = _get_df_from_xl(xl, '31_Unmanaged_campaigns')
+        df32 = _get_df_from_xl(xl, '32_Unmanaged_Campaigns_Budget_O')
+        df33 = _get_df_from_xl(xl, '33_RBO_Configuration_Insights')
+        df34 = _get_df_from_xl(xl, '34_Product_Level_ACoS')
+        df35 = _get_df_from_xl(xl, '35_Campaign_Level_ACoS')
+
+    # --- Pass 2: openpyxl for header + single-cell sheets ---
     wb = load_workbook(path, data_only=True, read_only=True)
 
     try:
@@ -253,20 +272,20 @@ def load_databricks_context(path: str) -> DatabricksContext:
         h = _parse_header(ws01)
         ctx = DatabricksContext(path=path, **h)
 
-        # --- DataFrames ---
-        ctx.df02 = _get_df_from_wb(wb, '02_Date_Range_KPIs__Date_Range_')
-        ctx.df07 = _get_df_from_wb(wb, '07_KPIs_by_Parent_ASIN_by_Month')
-        ctx.df14 = _get_df_from_wb(wb, '14_Campaign_Performance_by_Adve')
-        ctx.df37 = _get_df_from_wb(wb, '37_Gong_Call_Insights_for_Sales')
-        ctx.df26 = _get_df_from_wb(wb, '26_Unmanaged_ASIN')
-        ctx.df27 = _get_df_from_wb(wb, '27_Timeframe_Boost')
-        ctx.df28 = _get_df_from_wb(wb, '28_Unmanaged_Budget')
-        ctx.df29 = _get_df_from_wb(wb, '29_Negative_Keywords__Global')
-        ctx.df31 = _get_df_from_wb(wb, '31_Unmanaged_campaigns')
-        ctx.df32 = _get_df_from_wb(wb, '32_Unmanaged_Campaigns_Budget_O')
-        ctx.df33 = _get_df_from_wb(wb, '33_RBO_Configuration_Insights')
-        ctx.df34 = _get_df_from_wb(wb, '34_Product_Level_ACoS')
-        ctx.df35 = _get_df_from_wb(wb, '35_Campaign_Level_ACoS')
+        # Attach DataFrames loaded in Pass 1
+        ctx.df02 = df02
+        ctx.df07 = df07
+        ctx.df14 = df14
+        ctx.df37 = df37
+        ctx.df26 = df26
+        ctx.df27 = df27
+        ctx.df28 = df28
+        ctx.df29 = df29
+        ctx.df31 = df31
+        ctx.df32 = df32
+        ctx.df33 = df33
+        ctx.df34 = df34
+        ctx.df35 = df35
 
         # --- Tab 38: Client Success Insights — latest row by SystemModstamp ---
         ws38 = _get_ws(wb, '38_Client_Success_Insights_Repo')
