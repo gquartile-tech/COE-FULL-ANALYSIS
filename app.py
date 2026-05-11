@@ -13,7 +13,6 @@ import re
 import sys
 import traceback
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -235,20 +234,20 @@ def analyze():
 
         agent_results = {}
 
-        # Run all 4 agents — each independently, collect success/error per agent
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = {executor.submit(fn, input_path): key for key, fn in AGENTS.items()}
-            for future in as_completed(futures):
-                key = futures[future]
-                try:
-                    agent_results[key] = {"status": "ok", **future.result()}
-                except Exception as e:
-                    traceback.print_exc()
-                    agent_results[key] = {
-                        "status": "error",
-                        "label":  key.capitalize(),
-                        "error":  str(e),
-                    }
+        # Run agents sequentially — parallel execution causes Gunicorn worker
+        # timeouts and memory exhaustion on Render for large accounts.
+        for key, fn in AGENTS.items():
+            try:
+                agent_results[key] = {"status": "ok", **fn(input_path)}
+            except Exception as e:
+                traceback.print_exc()
+                agent_results[key] = {
+                    "status": "error",
+                    "label":  key.capitalize(),
+                    "error":  str(e),
+                }
+            finally:
+                gc.collect()
 
     finally:
         try:
