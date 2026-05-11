@@ -5,3 +5,4 @@ pandas>=2.0.0
 numpy>=1.23
 python-dateutil>=2.8.2
 werkzeug>=3.0
+python-calamine>=0.1.0

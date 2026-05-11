@@ -198,7 +198,7 @@ def _load_allowed_sheets_to_dfs(wb_path: str) -> Dict[str, pd.DataFrame]:
 
     sheets: Dict[str, pd.DataFrame] = {}
     # Open once — all sheet reads share this file handle
-    with pd.ExcelFile(wb_path) as xl:
+    with pd.ExcelFile(wb_path, engine="calamine") as xl:
         for s in xl.sheet_names:
             if any(s.startswith(pfx) for pfx in allowed_prefixes):
                 try:

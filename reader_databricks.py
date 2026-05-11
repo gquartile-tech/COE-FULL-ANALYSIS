@@ -182,7 +182,7 @@ def load_databricks_export(path: str) -> DatabricksContext:
       - Excel row 7+ is data
     In pandas, that's header=5 (0-based).
     """
-    xls = pd.ExcelFile(path)
+    xls = pd.ExcelFile(path, engine="calamine")
     sheets: Dict[str, pd.DataFrame] = {}
 
     # Load ONLY sheets that match the prefixes listed in cfg.TAB_CANDIDATES (v8 allowlist).

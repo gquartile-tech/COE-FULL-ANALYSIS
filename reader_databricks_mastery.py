@@ -247,7 +247,7 @@ def load_databricks_context(path: str) -> DatabricksContext:
     #             (sheets 38, 39, 54 and account header from 01)
 
     # --- Pass 1: bulk DataFrames via pandas ---
-    with pd.ExcelFile(path) as xl:
+    with pd.ExcelFile(path, engine="calamine") as xl:
         df02 = _get_df_from_xl(xl, '02_Date_Range_KPIs__Date_Range_')
         df07 = _get_df_from_xl(xl, '07_KPIs_by_Parent_ASIN_by_Month')
         df14 = _get_df_from_xl(xl, '14_Campaign_Performance_by_Adve')
