@@ -128,63 +128,60 @@ def _extract_header_from_01(
       A4: "Date Range: YYYY-MM-DD to YYYY-MM-DD"
       A5: "Downloaded: YYYY-MM-DD HH:MM:SS"
     """
-    wb = load_workbook(wb_path, data_only=True)
-    try:
-        sheet = None
-        for name in wb.sheetnames:
-            if name.startswith("01_Advertiser_Name"):
-                sheet = wb[name]
-                break
-        if sheet is None:
-            return ("", "", "", None, "", None, None, None)
+    wb = load_workbook(wb_path, read_only=True, data_only=True)
+    sheet = None
+    for name in wb.sheetnames:
+        if name.startswith("01_Advertiser_Name"):
+            sheet = wb[name]
+            break
+    if sheet is None:
+        return ("", "", "", None, "", None, None, None)
 
-        # ✅ FIX: Keep FULL account name, only remove the trailing Advertiser suffix
-        a1 = _safe_cell(sheet, 1, 1) or ""
-        hash_name = _clean_hash_name(a1)
+    # ✅ FIX: Keep FULL account name, only remove the trailing Advertiser suffix
+    a1 = _safe_cell(sheet, 1, 1) or ""
+    hash_name = _clean_hash_name(a1)
 
-        tenant_id = ""
-        account_id = ""
-        window_str = ""
-        window_start = None
-        window_end = None
-        window_days = None
-        downloaded_dt = None
+    tenant_id = ""
+    account_id = ""
+    window_str = ""
+    window_start = None
+    window_end = None
+    window_days = None
+    downloaded_dt = None
 
-        # scan first ~20 rows for known patterns
-        for r in range(1, 25):
-            v = _safe_cell(sheet, r, 1)
-            if not v:
-                continue
-            s = str(v).strip()
+    # scan first ~20 rows for known patterns
+    for r in range(1, 25):
+        v = _safe_cell(sheet, r, 1)
+        if not v:
+            continue
+        s = str(v).strip()
 
-            if "tenant id" in s.lower():
-                m = re.search(r"tenant id:\s*(.*)$", s, flags=re.I)
-                if m:
-                    tenant_id = m.group(1).strip()
+        if "tenant id" in s.lower():
+            m = re.search(r"tenant id:\s*(.*)$", s, flags=re.I)
+            if m:
+                tenant_id = m.group(1).strip()
 
-            if "account id" in s.lower():
-                m = re.search(r"account id:\s*(.*)$", s, flags=re.I)
-                if m:
-                    account_id = m.group(1).strip()
+        if "account id" in s.lower():
+            m = re.search(r"account id:\s*(.*)$", s, flags=re.I)
+            if m:
+                account_id = m.group(1).strip()
 
-            if "date range" in s.lower():
-                # "Date Range: YYYY-MM-DD to YYYY-MM-DD"
-                m = re.search(r"date range:\s*([0-9\-]+)\s*to\s*([0-9\-]+)", s, flags=re.I)
-                if m:
-                    window_start = _parse_date_any(m.group(1))
-                    window_end = _parse_date_any(m.group(2))
-                    window_str = f"{m.group(1)} to {m.group(2)}"
-                    if window_start and window_end:
-                        window_days = (window_end - window_start).days
+        if "date range" in s.lower():
+            # "Date Range: YYYY-MM-DD to YYYY-MM-DD"
+            m = re.search(r"date range:\s*([0-9\-]+)\s*to\s*([0-9\-]+)", s, flags=re.I)
+            if m:
+                window_start = _parse_date_any(m.group(1))
+                window_end = _parse_date_any(m.group(2))
+                window_str = f"{m.group(1)} to {m.group(2)}"
+                if window_start and window_end:
+                    window_days = (window_end - window_start).days
 
-            if "downloaded" in s.lower():
-                m = re.search(r"downloaded:\s*(.*)$", s, flags=re.I)
-                if m:
-                    downloaded_dt = _parse_datetime_any(m.group(1).strip())
+        if "downloaded" in s.lower():
+            m = re.search(r"downloaded:\s*(.*)$", s, flags=re.I)
+            if m:
+                downloaded_dt = _parse_datetime_any(m.group(1).strip())
 
-        return (hash_name, tenant_id, account_id, downloaded_dt, window_str, window_start, window_end, window_days)
-    finally:
-        wb.close()
+    return (hash_name, tenant_id, account_id, downloaded_dt, window_str, window_start, window_end, window_days)
 
 
 def _load_allowed_sheets_to_dfs(wb_path: str) -> Dict[str, pd.DataFrame]:

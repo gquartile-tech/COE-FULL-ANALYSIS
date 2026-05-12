@@ -82,13 +82,15 @@ def run_framework(input_path: str) -> dict:
     if not fpath.exists() or size < MIN_OUTPUT_BYTES:
         raise RuntimeError(f"Output too small ({size} bytes)")
 
-    return {
+    out = {
         "label":     "Framework Analysis",
         "filename":  fname,
         "ok":        sum(1 for r in results.values() if r.status == "OK"),
         "flag":      sum(1 for r in results.values() if r.status == "FLAG"),
         "partial":   sum(1 for r in results.values() if r.status == "PARTIAL"),
     }
+    del ctx, results
+    return out
 
 
 def run_health(input_path: str) -> dict:
@@ -120,13 +122,15 @@ def run_health(input_path: str) -> dict:
     if not fpath.exists() or size < MIN_OUTPUT_BYTES:
         raise RuntimeError(f"Output too small ({size} bytes)")
 
-    return {
+    out = {
         "label":   "Account Health Analysis",
         "filename": fname,
         "ok":      sum(1 for r in results.values() if r.status == "OK"),
         "flag":    sum(1 for r in results.values() if r.status == "FLAG"),
         "partial": sum(1 for r in results.values() if r.status == "PARTIAL"),
     }
+    del ctx, results
+    return out
 
 
 def run_mastery(input_path: str) -> dict:
@@ -165,7 +169,7 @@ def run_mastery(input_path: str) -> dict:
     if not fpath.exists() or size < MIN_OUTPUT_BYTES:
         raise RuntimeError(f"Output too small ({size} bytes)")
 
-    return {
+    out = {
         "label":   "Account Mastery Analysis",
         "filename": fname,
         "score":   round(score, 1),
@@ -174,6 +178,8 @@ def run_mastery(input_path: str) -> dict:
         "flag":    sum(1 for r in results.values() if r.status == "FLAG"),
         "partial": sum(1 for r in results.values() if r.status == "PARTIAL"),
     }
+    del ctx, results, summary, findings
+    return out
 
 
 def run_strategy(input_path: str) -> dict:
@@ -215,56 +221,58 @@ def index():
 def analyze():
     # Outer guard: any unhandled exception must still return JSON, never HTML.
     try:
-        if "file" not in request.files:
-            return jsonify({"error": "No file uploaded."}), 400
-        uploaded = request.files["file"]
-        if not uploaded.filename:
-            return jsonify({"error": "No file selected."}), 400
-        _, ext = os.path.splitext(uploaded.filename.lower())
-        if ext not in {".xlsx", ".xlsm"}:
-            return jsonify({"error": "Only .xlsx or .xlsm files accepted."}), 400
-
-        safe_name = secure_filename(uploaded.filename)
-        if not safe_name:
-            # Fallback: werkzeug strips all chars from non-ASCII filenames
-            safe_name = f"upload_{uuid.uuid4().hex}{ext}"
-
-        input_path = str(UPLOAD_DIR / safe_name)
-
-        try:
-            uploaded.save(input_path)
-
-            agent_results = {}
-
-            # Run agents sequentially — parallel execution causes Gunicorn worker
-            # timeouts and memory exhaustion on Render for large accounts.
-            for key, fn in AGENTS.items():
-                try:
-                    agent_results[key] = {"status": "ok", **fn(input_path)}
-                except Exception as e:
-                    traceback.print_exc()
-                    agent_results[key] = {
-                        "status": "error",
-                        "label":  key.capitalize(),
-                        "error":  str(e),
-                    }
-                finally:
-                    gc.collect()
-
-        finally:
-            try:
-                os.remove(input_path)
-            except Exception:
-                pass
-            gc.collect()
-
-        # Always return 200 — let the frontend handle per-agent status
-        return jsonify({"agents": agent_results})
-
+     return _analyze_inner()
     except Exception as e:
-        # Last-resort catch — prevents Flask from returning an HTML 500 page.
         traceback.print_exc()
         return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+
+def _analyze_inner():
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded."}), 400
+    uploaded = request.files["file"]
+    if not uploaded.filename:
+        return jsonify({"error": "No file selected."}), 400
+    _, ext = os.path.splitext(uploaded.filename.lower())
+    if ext not in {".xlsx", ".xlsm"}:
+        return jsonify({"error": "Only .xlsx or .xlsm files accepted."}), 400
+
+    safe_name = secure_filename(uploaded.filename)
+    if not safe_name:
+        # Fallback: werkzeug strips all chars from non-ASCII filenames
+        safe_name = f"upload_{uuid.uuid4().hex}{ext}"
+
+    input_path = str(UPLOAD_DIR / safe_name)
+
+    try:
+        uploaded.save(input_path)
+
+        agent_results = {}
+
+        # Run agents sequentially — parallel execution causes Gunicorn worker
+        # timeouts and memory exhaustion on Render for large accounts.
+        for key, fn in AGENTS.items():
+            try:
+                agent_results[key] = {"status": "ok", **fn(input_path)}
+            except Exception as e:
+                traceback.print_exc()
+                agent_results[key] = {
+                    "status": "error",
+                    "label":  key.capitalize(),
+                    "error":  str(e),
+                }
+            finally:
+                gc.collect()
+
+    finally:
+        try:
+            os.remove(input_path)
+        except Exception:
+            pass
+        gc.collect()
+
+    # Always return 200 — let the frontend handle per-agent status
+    return jsonify({"agents": agent_results})
 
 
 @app.route("/download/<path:filename>")
