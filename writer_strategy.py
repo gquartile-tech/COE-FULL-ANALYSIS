@@ -454,6 +454,7 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str):
     filename = re.sub(r'[<>:"/\\|?*]', '-', filename)
     out_path = os.path.join(output_dir, filename)
     wb.save(out_path)
+    wb.close()
     print(f"Saved: {out_path}")
     return out_path
 
