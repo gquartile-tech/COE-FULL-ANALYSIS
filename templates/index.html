@@ -329,7 +329,11 @@ runB.addEventListener('click', function() {
     doneSteps();
     var data;
     try { data = JSON.parse(xhr.responseText); }
-    catch(e) { showErr('Could not parse server response.'); runB.disabled = false; return; }
+    catch(e) {
+      var preview = xhr.responseText ? xhr.responseText.substring(0, 300).replace(/</g,'&lt;') : '(empty)';
+      showErr('Server returned an unexpected response (HTTP ' + xhr.status + '). Check Render logs. Preview: ' + preview);
+      runB.disabled = false; return;
+    }
 
     if (data.error) { showErr(data.error); runB.disabled = false; return; }
 
