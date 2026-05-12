@@ -213,51 +213,58 @@ def index():
 
 @app.route("/analyze", methods=["POST"])
 def analyze():
-    if "file" not in request.files:
-        return jsonify({"error": "No file uploaded."}), 400
-    uploaded = request.files["file"]
-    if not uploaded.filename:
-        return jsonify({"error": "No file selected."}), 400
-    _, ext = os.path.splitext(uploaded.filename.lower())
-    if ext not in {".xlsx", ".xlsm"}:
-        return jsonify({"error": "Only .xlsx or .xlsm files accepted."}), 400
-
-    safe_name = secure_filename(uploaded.filename)
-    if not safe_name:
-        # Fallback: werkzeug strips all chars from non-ASCII filenames
-        safe_name = f"upload_{uuid.uuid4().hex}{ext}"
-
-    input_path = str(UPLOAD_DIR / safe_name)
-
+    # Outer guard: any unhandled exception must still return JSON, never HTML.
     try:
-        uploaded.save(input_path)
+        if "file" not in request.files:
+            return jsonify({"error": "No file uploaded."}), 400
+        uploaded = request.files["file"]
+        if not uploaded.filename:
+            return jsonify({"error": "No file selected."}), 400
+        _, ext = os.path.splitext(uploaded.filename.lower())
+        if ext not in {".xlsx", ".xlsm"}:
+            return jsonify({"error": "Only .xlsx or .xlsm files accepted."}), 400
 
-        agent_results = {}
+        safe_name = secure_filename(uploaded.filename)
+        if not safe_name:
+            # Fallback: werkzeug strips all chars from non-ASCII filenames
+            safe_name = f"upload_{uuid.uuid4().hex}{ext}"
 
-        # Run agents sequentially — parallel execution causes Gunicorn worker
-        # timeouts and memory exhaustion on Render for large accounts.
-        for key, fn in AGENTS.items():
-            try:
-                agent_results[key] = {"status": "ok", **fn(input_path)}
-            except Exception as e:
-                traceback.print_exc()
-                agent_results[key] = {
-                    "status": "error",
-                    "label":  key.capitalize(),
-                    "error":  str(e),
-                }
-            finally:
-                gc.collect()
+        input_path = str(UPLOAD_DIR / safe_name)
 
-    finally:
         try:
-            os.remove(input_path)
-        except Exception:
-            pass
-        gc.collect()
+            uploaded.save(input_path)
 
-    # Always return 200 — let the frontend handle per-agent status
-    return jsonify({"agents": agent_results})
+            agent_results = {}
+
+            # Run agents sequentially — parallel execution causes Gunicorn worker
+            # timeouts and memory exhaustion on Render for large accounts.
+            for key, fn in AGENTS.items():
+                try:
+                    agent_results[key] = {"status": "ok", **fn(input_path)}
+                except Exception as e:
+                    traceback.print_exc()
+                    agent_results[key] = {
+                        "status": "error",
+                        "label":  key.capitalize(),
+                        "error":  str(e),
+                    }
+                finally:
+                    gc.collect()
+
+        finally:
+            try:
+                os.remove(input_path)
+            except Exception:
+                pass
+            gc.collect()
+
+        # Always return 200 — let the frontend handle per-agent status
+        return jsonify({"agents": agent_results})
+
+    except Exception as e:
+        # Last-resort catch — prevents Flask from returning an HTML 500 page.
+        traceback.print_exc()
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
 
 
 @app.route("/download/<path:filename>")
