@@ -34,6 +34,9 @@ TAB_CANDIDATES: Dict[str, List[str]] = {
     # Client Success / Constraints / Fees
     "CS_REPO": ["38_Client_Success_Insights_Repo"],
 
+    # Campaign grouped (used by C016 SD spend share)
+    "CAMP_GROUPED": ["09_Campaigns_Grouped_by_Amazon_"],
+
     # GGS & commitment
     "GGS_DOMO": ["42_Amazon_GGS_Domo"],
 
