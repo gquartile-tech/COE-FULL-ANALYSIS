@@ -176,6 +176,13 @@ class StrategyContext:
     has_catchall: bool = False
     ba_campaign_count: int = 0
     unmanaged_campaign_count: int = 0  # tab 31
+    # NEW: additional campaign presence signals
+    has_bak: bool = False              # any BAK campaign active
+    has_op: bool = False               # any OP (product target) campaign active
+    has_sd_prd: bool = False           # any SD_PRD campaign active
+    has_vcpm: bool = False             # any VCPM campaign active
+    watm_campaign_count: int = 0       # number of distinct WATM campaigns
+    sbv_naming_compliant: bool = True  # all SBV campaigns use SBV_ prefix
 
     # ── portfolio (tab 25) ────────────────────────────────────────────────────
     portfolio_count: int = 0
@@ -196,10 +203,45 @@ class StrategyContext:
 
     # ── promo (tab 50) ────────────────────────────────────────────────────────
     has_active_promo: bool = False     # any PromotionDiscount > 0 in period
+    promo_asin_count: int = 0          # number of ASINs with active promo
+    promo_cost_rate: float = 0.0       # avg PromoCostRate_pct over last 4 weeks
+
+    # ── Pro Suite audiences (tab 51) ─────────────────────────────────────────
+    has_prosuite_audiences: bool = False      # any campaign has HasAudience=True
+    prosuite_audience_spend_pct: float = 0.0  # share of total spend with audience
+
+    # ── TACoS constraint (tab 38) ─────────────────────────────────────────────
+    tacos_constraint: float = 0.0      # 0 = not documented
 
     # ── ASIN tiers (tab 15) ───────────────────────────────────────────────────
     tier1_asin_count: int = 0         # TIER 10–30
     tier1_with_atm: int = 0           # Tier1 ASINs that have ATM spend
+    # NEW: single-ASIN account flag
+    parent_asin_count: int = 0        # unique parent ASINs in tab 15
+
+    # ── CPC trend ─────────────────────────────────────────────────────────────
+    # NEW: derived from tab 02 cpc_current vs cpc_last_year
+    cpc_yoy_change_pct: float = 0.0   # positive = increased, negative = decreased
+
+    # ── Portfolio coverage (tab 08) ───────────────────────────────────────────
+    campaigns_in_portfolio_pct: float = 0.0   # share of campaigns assigned to a portfolio
+    total_campaign_count: int = 0              # total campaign count from tab 08
+
+    # ── Search term category mix (tab 12) ─────────────────────────────────────
+    branded_spend_pct: float = 0.0      # Branded row Spend_Pct
+    branded_acos: float = 0.0           # Branded row acos
+    branded_cpc: float = 0.0            # Branded row cpc
+    non_branded_spend_pct: float = 0.0  # Non Branded row Spend_Pct
+    non_branded_acos: float = 0.0       # Non Branded row acos
+    non_branded_cpc: float = 0.0        # Non Branded row cpc
+    vcpm_spend_pct: float = 0.0         # VCPM row Spend_Pct (of total search term spend)
+
+    # ── Monthly trend signals (tab 04 — L24M) ────────────────────────────────
+    tacos_trend: str = 'stable'         # 'increasing', 'decreasing', 'stable'
+    tacos_trend_pp: float = 0.0         # total pp change over last 3 months
+    mom_spend_change: float = 0.0       # MoM spend change last month (decimal)
+    mom_sales_change: float = 0.0       # MoM total sales change last month (decimal)
+    l3m_tacos_avg: float = 0.0          # average TACoS over last 3 full months
 
 
 # ── main reader ───────────────────────────────────────────────────────────────
@@ -244,10 +286,15 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
     ctx.ad_sales      = _safe_float(d02.get('AdSales'))
     ctx.yoy_ad_sales  = _safe_float(d02.get('YoY_AdSales'))
 
+    # CPC YoY change — only compute when both values are present and non-zero
+    if ctx.cpc_last_year > 0 and ctx.cpc_current > 0:
+        ctx.cpc_yoy_change_pct = (ctx.cpc_current - ctx.cpc_last_year) / ctx.cpc_last_year
+
     # ── tab 38 — constraint ──────────────────────────────────────────────────
     d38_all = _tab_to_records(pa['38_Client_Success_Insights_Repo'])
     d38 = _latest_record(d38_all)
-    ctx.acos_constraint = _safe_float(d38.get('ACOS_Constraint__c'))
+    ctx.acos_constraint  = _safe_float(d38.get('ACOS_Constraint__c'))
+    ctx.tacos_constraint = _safe_float(d38.get('TACoS_Constraint__c'))
 
     # ── tab 24 — ACoS change history ─────────────────────────────────────────
     changes = _tab_to_records(pa['24_Account_ACoS_Changes_History'])
@@ -342,6 +389,22 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
         1 for r in camp_records
         if _safe_str(r.get('CampaignSubType')).upper() == 'BA'
     )
+    # NEW signals derived from tab 08
+    ctx.has_bak = any(
+        _safe_str(r.get('CampaignSubType')).upper() == 'BAK'
+        for r in camp_records
+    )
+    ctx.has_op = any(re.search(r'\bOP_|\bOP\b', n, re.IGNORECASE) for n in names)
+    ctx.has_sd_prd = any(re.search(r'\bSD_PRD\b', n, re.IGNORECASE) for n in names)
+    ctx.has_vcpm = any(re.search(r'\bVCPM\b', n, re.IGNORECASE) for n in names)
+    ctx.watm_campaign_count = sum(
+        1 for n in names if re.search(r'\bWATM\b', n, re.IGNORECASE)
+    )
+    # SBV naming compliance: all SBV campaigns should start with SBV_
+    sbv_names = [n for n in names if re.search(r'\bSBV\b', n, re.IGNORECASE)]
+    ctx.sbv_naming_compliant = all(
+        re.match(r'SBV_', n, re.IGNORECASE) for n in sbv_names
+    ) if sbv_names else True
 
     # ── tab 25 — portfolios ───────────────────────────────────────────────────
     port_records = _tab_to_records(pa['25_Portfolio_Insights_and_Confi'])
@@ -382,6 +445,34 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
         _safe_float(r.get('PromotionDiscount')) > 0
         for r in promo_records
     )
+    # Count ASINs with active promo and average promo cost rate over last 4 weeks
+    if promo_records:
+        last4 = promo_records[-4:]
+        ctx.promo_asin_count = max(
+            int(_safe_float(r.get('ActivePromoASINs'))) for r in last4
+        )
+        rates = [_safe_float(r.get('PromoCostRate_pct')) for r in last4
+                 if _safe_float(r.get('PromoCostRate_pct')) > 0]
+        ctx.promo_cost_rate = sum(rates) / len(rates) if rates else 0.0
+
+    # ── tab 51 — Pro Suite audience performance ───────────────────────────────
+    try:
+        prosuite_records = _tab_to_records(pa['51_Pro_Suite__Audience_Performa'])
+        if prosuite_records and not any(
+            'NO DATA' in str(list(r.values())).upper() for r in prosuite_records[:1]
+        ):
+            total_ps_spend = sum(_safe_float(r.get('TotalSpend')) for r in prosuite_records)
+            audience_spend = sum(
+                _safe_float(r.get('TotalSpend'))
+                for r in prosuite_records
+                if r.get('HasAudience') is True
+            )
+            ctx.has_prosuite_audiences = audience_spend > 0
+            ctx.prosuite_audience_spend_pct = (
+                audience_spend / total_ps_spend if total_ps_spend > 0 else 0.0
+            )
+    except Exception:
+        pass  # tab may not exist in older exports — safe default is False / 0.0
 
     # ── tab 15 — ASIN tiers ───────────────────────────────────────────────────
     asin_records = _tab_to_records(pa['15_Campaign_Performance_by_PARE'])
@@ -390,6 +481,95 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
     ctx.tier1_with_atm   = sum(
         1 for r in tier1 if _safe_float(r.get('OP_Spend')) > 0  # proxy: OP_Spend present = ATM active
     )
+    # NEW: count unique parent ASINs across all tiers to detect single-ASIN accounts
+    parent_asins = set(
+        _safe_str(r.get('ParentASIN'))
+        for r in asin_records
+        if not pd.isna(r.get('ParentASIN')) and _safe_str(r.get('ParentASIN'))
+    )
+    ctx.parent_asin_count = len(parent_asins)
+
+    # ── tab 08 — portfolio coverage ratio ─────────────────────────────────────
+    # Already read campaign_names above; re-use those records for portfolio count
+    camp_records_08 = _tab_to_records(pa['08_Campaign_Report'])
+    ctx.total_campaign_count = len(camp_records_08)
+    if ctx.total_campaign_count > 0:
+        in_port = sum(
+            1 for r in camp_records_08
+            if not _safe_str(r.get('PortfolioName')).startswith('Campaign Not in Portfolio')
+            and _safe_str(r.get('PortfolioName'))
+        )
+        ctx.campaigns_in_portfolio_pct = in_port / ctx.total_campaign_count
+
+    # ── tab 12 — branded vs non-branded keyword mix ────────────────────────────
+    try:
+        search_cat_records = _tab_to_records(pa['12_Search_Terms_by_Category'])
+        for r in search_cat_records:
+            cat = _safe_str(r.get('KeywordCategory')).lower().strip()
+            if cat == 'branded':
+                ctx.branded_spend_pct  = _safe_float(r.get('Spend_Pct'))
+                ctx.branded_acos       = _safe_float(r.get('acos'))
+                ctx.branded_cpc        = _safe_float(r.get('cpc'))
+            elif cat == 'non branded':
+                ctx.non_branded_spend_pct = _safe_float(r.get('Spend_Pct'))
+                ctx.non_branded_acos      = _safe_float(r.get('acos'))
+                ctx.non_branded_cpc       = _safe_float(r.get('cpc'))
+            elif cat == 'vcpm':
+                ctx.vcpm_spend_pct = _safe_float(r.get('Spend_Pct'))
+    except Exception:
+        pass
+
+    # ── tab 04 — L24M monthly trend signals ──────────────────────────────────
+    try:
+        import pandas as _pd
+        ws04 = pa['04_L24M_Monthly_Performance_Sum']
+        rows04 = [r for r in ws04.iter_rows(min_row=7, values_only=True) if any(v is not None for v in r)]
+        if rows04:
+            # Build minimal df: col 0 = Month, col 2 = AdSpend, col 3 = TACoS, col 4 = TotalSales
+            months, tacos_vals, spend_vals, sales_vals = [], [], [], []
+            for r in rows04:
+                m = r[0]; tc = r[3]; sp = r[2]; sl = r[1]
+                if m is None:
+                    continue
+                try:
+                    m_ts = _pd.to_datetime(m, errors='coerce')
+                    if _pd.isna(m_ts):
+                        continue
+                except Exception:
+                    continue
+                months.append(m_ts)
+                tacos_vals.append(float(tc) if tc is not None else None)
+                spend_vals.append(float(sp) if sp is not None else None)
+                sales_vals.append(float(sl) if sl is not None else None)
+
+            # Sort by month and take last 3 non-None tacos values
+            paired = sorted(zip(months, tacos_vals, spend_vals, sales_vals), key=lambda x: x[0])
+            valid_tacos = [(t, s, sl) for _, t, s, sl in paired if t is not None]
+
+            if len(valid_tacos) >= 3:
+                last3_tacos  = [v[0] for v in valid_tacos[-3:]]
+                last3_spend  = [v[1] for v in valid_tacos[-3:] if v[1] is not None]
+                last3_sales  = [v[2] for v in valid_tacos[-3:] if v[2] is not None]
+
+                ctx.l3m_tacos_avg = sum(last3_tacos) / len(last3_tacos)
+                pp_change = (last3_tacos[-1] - last3_tacos[0]) * 100  # decimal → pp
+                ctx.tacos_trend_pp = round(pp_change, 2)
+
+                if pp_change > 1.5:
+                    ctx.tacos_trend = 'increasing'
+                elif pp_change < -1.5:
+                    ctx.tacos_trend = 'decreasing'
+                else:
+                    ctx.tacos_trend = 'stable'
+
+                if len(last3_spend) >= 2 and last3_spend[-2] > 0:
+                    ctx.mom_spend_change = (last3_spend[-1] - last3_spend[-2]) / last3_spend[-2]
+                if len(last3_sales) >= 2 and last3_sales[-2] > 0:
+                    ctx.mom_sales_change = (last3_sales[-1] - last3_sales[-2]) / last3_sales[-2]
+
+            # VCPM spend share from tab 12 (already parsed above — read from search_cat_records if available)
+    except Exception:
+        pass
 
     pa.close()
     return ctx
