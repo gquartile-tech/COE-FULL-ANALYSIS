@@ -266,20 +266,26 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     # S007 / S008 — keep as-is per review decision.
 
     # S009 — Framework meta-check. Only fires when gaps compound a perf problem.
+    # Portfolio gap only counts when the account is actively using portfolios
+    # (>10% in portfolios). If 0% = not using portfolios at all, not a structural gap.
+    portfolio_gap = (
+        ctx.campaigns_not_in_portfolio > 5
+        and ctx.campaigns_in_portfolio_pct > 0.10
+    )
     _gaps = sum([
         ctx.spend_sb   == 0,
         not ctx.has_cat_sp,
         not ctx.has_sbv and ctx.spend_sbv == 0,
         not ctx.has_sd  and ctx.spend_sd  == 0,
         ctx.spend_spt  > 0 and ctx.pct_atm < 0.03,
-        ctx.campaigns_not_in_portfolio > 5,
+        portfolio_gap,
         non_qt_total   > 0.40,
         not ctx.has_op and ctx.pct_op == 0,
         not has_atc,
     ])
     if _gaps >= 5 and (above_acos or declining_yoy):
         flag('S009', 'FLAG')
-    elif _gaps >= 3 and above_acos:
+    elif _gaps >= 3 and (above_acos or declining_yoy):
         flag('S009', 'PARTIAL')
 
     # ── OVERALL STRUCTURE ─────────────────────────────────────────────────────
@@ -291,7 +297,7 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     # S014 — BA running but no BAK harvest layer. Gate: not critically above TACoS.
     if ctx.pct_ba > 0 and ctx.pct_bak == 0 and ctx.total_spend > 500 and not above_tacos_10:
         flag('S014', 'FLAG')
-    elif ctx.pct_ba > 0 and 0 < ctx.pct_bak < ctx.pct_ba * 0.3:
+    elif ctx.pct_ba > 0 and 0 < ctx.pct_bak < ctx.pct_ba * 0.20:
         flag('S014', 'PARTIAL')
 
     # S017 — Single ASIN with multi-ASIN bulk structures.
@@ -300,11 +306,13 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
 
     # ── OVERALL PARAMETERS AND KPIs ───────────────────────────────────────────
 
-    # S018 — CPC up YoY. More urgent when efficiency is already suffering.
+    # S018 — CPC rise YoY. Only surfaces as a strategic concern when the
+    # account is NOT growing cleanly. A rising CPC on a growing, efficient
+    # account is expected market competition — not a strategy problem.
     if ctx.cpc_yoy_change_pct > 0.20 and above_acos:
         flag('S018', 'FLAG')
-    elif ctx.cpc_yoy_change_pct > 0.20:
-        flag('S018', 'PARTIAL')
+    elif ctx.cpc_yoy_change_pct > 0.20 and not growing_yoy:
+        flag('S018', 'PARTIAL')  # CPC rising, sales not growing to offset it
     elif ctx.cpc_yoy_change_pct > 0.10 and above_acos:
         flag('S018', 'PARTIAL')
 
@@ -314,21 +322,21 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     elif tacos_rising and ctx.tacos_trend_pp > 0.70:
         flag('S019', 'PARTIAL')
 
-    # S020 — OOB + budget expansion. Urgency depends on efficiency state.
-    if ctx.has_oob and not above_acos_10:
-        flag('S020', 'FLAG')
-    elif ctx.has_oob:
-        flag('S020', 'PARTIAL')
-
-    # S021 — No TACoS constraint documented.
-    if tacos_con == 0:
-        flag('S021', 'PARTIAL')
-
-    # S023 — OOB scope/budget decision.
+    # S020/S023 — OOB signals. On a growing + efficient account, OOB means
+    # budget expansion opportunity (positive signal). Only flag when the account
+    # is NOT growing cleanly or ACoS is already under pressure.
     if ctx.has_oob and above_acos_10:
+        flag('S020', 'FLAG')   # OOB + inefficient = urgent
         flag('S023', 'FLAG')
-    elif ctx.has_oob:
+    elif ctx.has_oob and above_acos and not growing_yoy:
+        flag('S020', 'PARTIAL')
         flag('S023', 'PARTIAL')
+    elif ctx.has_oob and not growing_yoy:
+        flag('S020', 'PARTIAL')  # OOB + flat/declining = budget constraint issue
+        flag('S023', 'PARTIAL')
+    # If OOB + growing + ACoS clean: suppressed — budget expansion ticket, not a strategy flag
+
+    # S021 — removed (TACoS constraint tracked in Account Health pillar)
 
     # ── BASIC STRATEGY ────────────────────────────────────────────────────────
 
@@ -343,10 +351,14 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
         flag('S030', 'PARTIAL')
         flag('S031', 'PARTIAL')
 
-    # S032 — ATM expansion. Only when account has headroom to invest.
-    if ctx.pct_atm < 0.03 and not above_tacos_10 and not (ctx.has_oob and above_acos_10):
+    # S032 — ATM expansion. Only when account has headroom and bulk-heavy
+    # accounts with BAK already running are a lower priority for ATM expansion.
+    bulk_heavy = (ctx.pct_ba + ctx.pct_bak + ctx.pct_spt) > 0.60 and ctx.pct_bak > 0
+    if ctx.pct_atm < 0.03 and not above_tacos_10 and not bulk_heavy and not (ctx.has_oob and above_acos_10):
         flag('S032', 'FLAG')
-    elif ctx.pct_atm < 0.08 and not above_tacos and growing_yoy:
+    elif ctx.pct_atm < 0.03 and bulk_heavy and declining_yoy:
+        flag('S032', 'PARTIAL')  # bulk-heavy but declining — still worth flagging
+    elif ctx.pct_atm < 0.08 and not above_tacos and growing_yoy and not bulk_heavy:
         flag('S032', 'PARTIAL')
 
     # S037 — BA refocus. BA slow movers are likely the cause when ACoS or YoY is bad.
@@ -359,18 +371,25 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     if 0 < ctx.ba_campaign_count < 2 and ctx.total_spend > 500:
         flag('S039', 'FLAG')
 
-    # S045 — No SB. Always a suggestion; urgency adapts to performance.
-    if ctx.spend_sb == 0:
+    # S045 — SB missing. Only suggest when account has a base structure already
+    # working: OP or CAT_SP with spend indicates product-targeting is established.
+    # If neither is running, SB is premature.
+    has_product_targeting_base = (ctx.has_op and ctx.pct_op > 0) or (ctx.has_cat_sp and ctx.total_spend > 500)
+    if ctx.spend_sb == 0 and has_product_targeting_base:
         if declining_yoy:
             flag('S045', 'FLAG')
         elif above_acos_10:
-            flag('S045', 'PARTIAL')
+            flag('S045', 'PARTIAL')  # fix ACoS first, then SB
         else:
             flag('S045', 'FLAG')
 
-    # S047 — Imported campaigns need import kickoff regardless of performance.
-    if ctx.spend_imported > 0:
+    # S047 — Import kickoff. Only flag when imported spend is meaningful:
+    # >20% of total spend means the account has a real structural dependency
+    # on unmanaged campaigns. A few dollars of imported spend is not actionable.
+    if ctx.total_spend > 0 and ctx.pct_imported > 0.20:
         flag('S047', 'FLAG')
+    elif ctx.total_spend > 0 and ctx.pct_imported > 0.10:
+        flag('S047', 'PARTIAL')
 
     # ── NEW DEPLOYS ───────────────────────────────────────────────────────────
 
@@ -381,12 +400,13 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
         else:
             flag('S062', 'PARTIAL')
 
-    # S063 — No SBV. Most urgent when SB is already active (natural next step).
-    if not ctx.has_sbv and ctx.spend_sbv == 0:
-        if ctx.spend_sb > 0:
-            flag('S063', 'FLAG')
-        elif growing_yoy:
-            flag('S063', 'PARTIAL')
+    # S063 — SBV missing. Only suggest when SB is established (>1% of spend)
+    # AND a product-targeting base exists (OP or CAT_SP with spend).
+    # SBV without a working SB + product-targeting base is premature.
+    sb_established = ctx.pct_sb > 0.01 and ctx.sb_impressions > 10000
+    if (not ctx.has_sbv and ctx.spend_sbv == 0
+            and sb_established and has_product_targeting_base):
+        flag('S063', 'FLAG')
 
     # S071 — Multiple WATM without structural reason.
     if ctx.watm_campaign_count > 1:
@@ -413,10 +433,13 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
 
     # ── GOVERNANCE ────────────────────────────────────────────────────────────
 
-    # S086 — Portfolio governance.
-    if ctx.portfolio_count > 3 and ctx.portfolios_with_budget_cap == 0:
+    # S086 — Portfolio governance. Only relevant when the account is already
+    # using portfolios (>10% of campaigns assigned). If 0% = not using portfolios,
+    # there is nothing to govern.
+    using_portfolios = ctx.campaigns_in_portfolio_pct > 0.10
+    if using_portfolios and ctx.portfolio_count > 3 and ctx.portfolios_with_budget_cap == 0:
         flag('S086', 'FLAG')
-    elif ctx.portfolio_count > 0 and ctx.managed_portfolio_count == 0:
+    elif using_portfolios and ctx.portfolio_count > 0 and ctx.managed_portfolio_count == 0:
         flag('S086', 'PARTIAL')
 
     # S087 — >50% unmanaged. Aligned thresholds with S029.
@@ -441,19 +464,20 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     if ctx.spend_ba > 0 and ctx.spend_spt > 0 and ctx.spend_atm > 0 and not ctx.has_op:
         flag('S091', 'PARTIAL')
 
-    # S092 — RBO. Suggest only when there's a performance reason.
-    if not ctx.has_rbo and (above_acos or declining_yoy):
-        flag('S092', 'PARTIAL')
+    # S092 — RBO. Requires weekend vs weekday ACoS data to validate.
+    # That data is not available in the Databricks export — suppress automatic flag.
+    # Manual review required during QR call.
 
     # S093 — SBV naming convention.
     if ctx.has_sbv and not ctx.sbv_naming_compliant:
         flag('S093', 'PARTIAL')
 
-    # S094/S095 — Campaigns outside portfolio.
-    if ctx.campaigns_not_in_portfolio > 5:
+    # S094/S095 — Campaigns outside portfolio. Only relevant when the account
+    # is actively using portfolios. If 0% in portfolios = not using them.
+    if using_portfolios and ctx.campaigns_not_in_portfolio > 5:
         flag('S094', 'FLAG')
         flag('S095', 'FLAG')
-    elif ctx.campaigns_not_in_portfolio > 0:
+    elif using_portfolios and ctx.campaigns_not_in_portfolio > 0:
         flag('S094', 'PARTIAL')
 
     # S102 — ProSuite not deployed. Suggest at scale + growing.
@@ -463,19 +487,26 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
         flag('S102', 'PARTIAL')
 
     # S104 — SB active but SBV missing.
-    if ctx.sb_impressions > 0 and ctx.spend_sbv == 0:
+    # Only flag when SB has meaningful spend (not just $0 with impressions from history).
+    if ctx.sb_impressions > 0 and ctx.spend_sb > 0 and ctx.spend_sbv == 0:
         flag('S104', 'FLAG')
 
     # ── CLIENT DIRECTIONS ─────────────────────────────────────────────────────
 
+    # S107 — Recurring sales strategy. Only relevant when SnS is NOT active.
+    # SnS active = account already has a recurring purchase strategy.
+    if not ctx.has_sns_active and declining_yoy:
+        flag('S107', 'FLAG')
+    elif not ctx.has_sns_active and not growing_yoy:
+        flag('S107', 'PARTIAL')
+
     # S108 — Sales declining YoY while spend growing (efficiency trap).
     if declining_yoy and spend_rising:
         flag('S108', 'FLAG')
-    elif declining_yoy:
-        flag('S107', 'FLAG')
 
-    # S113/S114 — Subscribe & Save. Suggest when no promo active.
-    if not ctx.has_active_promo:
+    # S113/S114 — Subscribe & Save. Fire only when SnS is genuinely not running.
+    # has_sns_active reads ActiveSubscriptions > 0 from tab 50.
+    if not ctx.has_sns_active:
         if declining_yoy:
             flag('S113', 'FLAG')
             flag('S114', 'FLAG')
@@ -485,8 +516,12 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
 
     # ── PROMO AND GGS ─────────────────────────────────────────────────────────
 
-    # S117/S118 — Active promo — validate budget pacing.
-    if ctx.has_active_promo:
+    # S117/S118 — Promo portfolio budget pacing. Only relevant when there is
+    # an actual Promo Management portfolio (named 'Promo') AND promo is active.
+    has_named_promo_portfolio = any(
+        'PROMO' in str(n).upper() for n in ctx.portfolio_names
+    )
+    if ctx.has_active_promo and has_named_promo_portfolio:
         flag('S117', 'PARTIAL')
         flag('S118', 'PARTIAL')
 
@@ -494,10 +529,16 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     if not ctx.has_active_promo:
         flag('S125', 'PARTIAL')
 
-    # S120/S121 — GGS non-compliant and no SD spend.
-    if ctx.ggs_status == 'No' and ctx.spend_sd == 0:
+    # S120/S121 — GGS SD compliance.
+    # FLAG when GGS is committed (ggs_status==Yes OR SD portfolio exists)
+    # but SD spend is $0 — means they signed up for GGS but aren't executing.
+    # Also FLAG when GGS status is explicitly No and SD portfolio exists.
+    has_sd_commitment = ctx.has_promo_portfolio or ctx.ggs_status == 'Yes'
+    if has_sd_commitment and ctx.spend_sd == 0:
         flag('S120', 'FLAG')
         flag('S121', 'FLAG')
+    elif ctx.ggs_status == 'No' and ctx.spend_sd == 0 and ctx.spend_sb > 0:
+        flag('S121', 'PARTIAL')
 
     # S122 — SD active but no remarketing.
     has_remarketing = any(
@@ -1035,6 +1076,28 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str) 
     w1('C43', _safe(gong.get('Gong__Call_Highlights_Next_Steps__c') or d55.get('Highlights_Next_Steps')))
 
     # ════════════════════════════════════════════════════════════════════════════
+    # TAB — STRATEGY OVERVIEW (original tab — col G = Flag, col C = What We Saw)
+    # Rows match _SID_TO_ROW exactly (both tabs share the same row numbers).
+    # ════════════════════════════════════════════════════════════════════════════
+    ws_old = wb['STRATEGY OVERVIEW']
+    dynamic_what = _build_what_we_saw(ctx, flags)
+
+    # Reset all AUTO rows to OK before writing — prevents stale template values
+    for row_idx in range(2, 135):
+        if ws_old.cell(row=row_idx, column=6).value == 'AUTO':
+            ws_old.cell(row=row_idx, column=7, value='OK')
+
+    for sid, level in flags.items():
+        row_num = _SID_TO_ROW.get(sid)
+        if row_num:
+            ws_old.cell(row=row_num, column=7, value=level)   # col G = Flag
+
+    for sid, text in dynamic_what.items():
+        row_num = _SID_TO_ROW.get(sid)
+        if row_num:
+            ws_old.cell(row=row_num, column=3, value=text)    # col C = What We Saw
+
+    # ════════════════════════════════════════════════════════════════════════════
     # TAB — New Strategy Overview
     # Col 5  (E) = Auto Review (AUTO/MANUAL — static in template, not overwritten)
     # Col 6  (F) = STATUS written by agent: FLAG / PARTIAL / OK
@@ -1042,14 +1105,18 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str) 
     # ════════════════════════════════════════════════════════════════════════════
     ws_ov = wb['New Strategy Overview']
 
+    # Reset all AUTO rows to OK before writing — prevents stale template values
+    for row_idx in range(2, 127):
+        if ws_ov.cell(row=row_idx, column=5).value == 'AUTO':
+            ws_ov.cell(row=row_idx, column=6, value='OK')
+
     # Write STATUS (col 6) for every control that fired
     for sid, level in flags.items():
         row_num = _SID_TO_ROW.get(sid)
         if row_num:
             ws_ov.cell(row=row_num, column=6, value=level)
 
-    # Write dynamic What We Saw (col 10) for controls that fired
-    dynamic_what = _build_what_we_saw(ctx, flags)
+    # Reuse dynamic_what already computed above
     for sid, text in dynamic_what.items():
         row_num = _SID_TO_ROW.get(sid)
         if row_num:
@@ -1069,6 +1136,13 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str) 
     # ════════════════════════════════════════════════════════════════════════════
     ws3 = wb['ChildASIN View']
 
+    import math as _math
+
+    # Build column → index map from header row 2
+    header_row2 = list(ws3.iter_rows(min_row=2, max_row=2, values_only=True))[0]
+    col_idx = {str(h).strip(): i for i, h in enumerate(header_row2, 1) if h}
+
+    # col14_map: template header label → field key in asin_records (tab 14)
     col14_map = {
         'Parent ASIN':       'ParentASIN',
         'ASIN':              'asin',
@@ -1093,19 +1167,72 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str) 
         'SD_Spend':          'SD_Spend',
         'Imported_Spend':    'Imported_Spend',
         'NonQuartile_Spend': 'NonQuartile_Spend',
+        'AOV':               'AOV',
+        'TAG 1':             'Tag1',
+        'TAG 2':             'Tag2',
+        'TAG 3':             'Tag3',
+        'TAG 4':             'Tag4',
+        'TAG 5':             'Tag5',
     }
 
-    # find data start row — header is row 2 in the template
+    # col22_map: template header → field key in cat_by_asin (tab 22)
+    col22_map = {
+        'PriceTier':  'PriceTier',
+        'Brand':      'Brand',
+        'Department': 'Department',
+        'Category':   'Category',
+    }
+
     data_row = 3
-    for col_label, src_key in col14_map.items():
-        # find which column in ws3 matches col_label
-        header_row = list(ws3.iter_rows(min_row=2, max_row=2, values_only=True))[0]
-        for ci, hval in enumerate(header_row, 1):
-            if hval and str(hval).strip() == col_label:
-                for ri, rec in enumerate(asin_records, data_row):
-                    val = rec.get(src_key)
-                    ws3.cell(row=ri, column=ci, value=val)
-                break
+    for row_idx, rec in enumerate(asin_records, data_row):
+        asin = _safe(rec.get('asin', ''))
+        cat  = cat_by_asin.get(asin, {})
+
+        for label, src in col14_map.items():
+            ci = col_idx.get(label)
+            if ci:
+                ws3.cell(row=row_idx, column=ci, value=rec.get(src))
+
+        for label, src in col22_map.items():
+            ci = col_idx.get(label)
+            if ci:
+                ws3.cell(row=row_idx, column=ci, value=cat.get(src))
+
+        # Computed columns
+        def _sf(v):
+            try: return float(v) if v is not None else 0.0
+            except: return 0.0
+        tot_s = _sf(rec.get('TotalSales'))
+        ad_s  = _sf(rec.get('AdSales'))
+        aov   = _sf(rec.get('AOV'))
+
+        ci_units = col_idx.get('Total Units Ordered')
+        if ci_units and aov > 0:
+            ws3.cell(row=row_idx, column=ci_units, value=_math.ceil(tot_s / aov))
+
+        ci_adsales_pct = col_idx.get('Ad Sales (%)')
+        if ci_adsales_pct and tot_s > 0:
+            ws3.cell(row=row_idx, column=ci_adsales_pct, value=round(ad_s / tot_s, 4))
+
+        ci_org_pct = col_idx.get('Organic Sales (%)')
+        if ci_org_pct and tot_s > 0:
+            ws3.cell(row=row_idx, column=ci_org_pct, value=round(1 - (ad_s / tot_s), 4))
+
+        ci_bb = col_idx.get('Buy Box%')
+        if ci_bb:
+            raw_bb = rec.get('Weighted_BuyBoxPercentage')
+            if raw_bb is not None:
+                ws3.cell(row=row_idx, column=ci_bb, value=round(_sf(raw_bb) / 100, 4))
+
+        # Quartile One / Quartile Bulk formula columns (28/29)
+        ci_q1 = col_idx.get('Quartile One')
+        ci_qb = col_idx.get('Quartile Bulk')
+        if ci_q1:
+            ws3.cell(row=row_idx, column=ci_q1,
+                     value=f'=SUM(O{row_idx}+Q{row_idx}+S{row_idx})')
+        if ci_qb:
+            ws3.cell(row=row_idx, column=ci_qb,
+                     value=f'=SUM(P{row_idx}+R{row_idx}+T{row_idx}+U{row_idx}+V{row_idx}+W{row_idx}+X{row_idx}+Y{row_idx}+Z{row_idx}+AA{row_idx})')
 
     # ── save output ──────────────────────────────────────────────────────────
     import re as _re

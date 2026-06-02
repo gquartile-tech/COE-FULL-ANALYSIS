@@ -210,6 +210,10 @@ class StrategyContext:
     has_prosuite_audiences: bool = False      # any campaign has HasAudience=True
     prosuite_audience_spend_pct: float = 0.0  # share of total spend with audience
 
+    # ── SnS and Promo Management (tab 50) ────────────────────────────────────
+    has_sns_active: bool = False       # SnS subscriptions active (ActiveSubscriptions > 0)
+    has_promo_portfolio: bool = False  # portfolio named SD_QTL_AMZ or Promo_ exists (GGS gate)
+
     # ── TACoS constraint (tab 38) ─────────────────────────────────────────────
     tacos_constraint: float = 0.0      # 0 = not documented
 
@@ -416,6 +420,13 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
         1 for r in port_records if r.get('IsBudgetCap') is True
     )
     ctx.portfolio_names = [_safe_str(r.get('Portfolio_Name')) for r in port_records]
+    # GGS gate: detect SD portfolio commitment.
+    # Portfolio names vary: 'SD_QTL_AMZ', 'SD QT AMZ', 'SD QTL', etc.
+    ctx.has_promo_portfolio = any(
+        ('SD' in str(n).upper() and ('QT' in str(n).upper() or 'AMZ' in str(n).upper()))
+        or 'PROMO' in str(n).upper()
+        for n in ctx.portfolio_names
+    )
 
     # ── tabs 33/34/35/36 — presence/absence signals ───────────────────────────
     ctx.has_rbo                    = not _no_data(pa['33_RBO_Configuration_Insights'])
@@ -454,6 +465,11 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
         rates = [_safe_float(r.get('PromoCostRate_pct')) for r in last4
                  if _safe_float(r.get('PromoCostRate_pct')) > 0]
         ctx.promo_cost_rate = sum(rates) / len(rates) if rates else 0.0
+        # SnS signal: any row with ActiveSubscriptions > 0
+        ctx.has_sns_active = any(
+            _safe_float(r.get('ActiveSubscriptions')) > 0
+            for r in promo_records
+        )
 
     # ── tab 51 — Pro Suite audience performance ───────────────────────────────
     try:
@@ -465,7 +481,7 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
             audience_spend = sum(
                 _safe_float(r.get('TotalSpend'))
                 for r in prosuite_records
-                if r.get('HasAudience') is True
+                if r.get('HasAudience') in (True, 'True', 'true', 1, '1')
             )
             ctx.has_prosuite_audiences = audience_spend > 0
             ctx.prosuite_audience_spend_pct = (
