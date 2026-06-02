@@ -220,6 +220,42 @@ class StrategyContext:
     # ── ASIN tiers (tab 15) ───────────────────────────────────────────────────
     tier1_asin_count: int = 0         # TIER 10–30
     tier1_with_atm: int = 0           # Tier1 ASINs that have ATM spend
+
+    # ── Tab 14 ASIN-level derived signals ─────────────────────────────────────
+    slow_movers_with_ba: int = 0       # ASINs Tier<30 (slow movers) that have BA_Spend > 0
+    max_asin_orders_30d: float = 0.0   # highest order count for any single ASIN in period
+    atm_ba_overlap_count: int = 0      # ASINs with ATM_Spend > 0 AND BA_Spend > 0 AND Orders > 80
+    spt_slow_mover_pct: float = 0.0    # pct of SPT spend on Tier<30 ASINs
+    catalog_asin_count: int = 0        # total ASINs in tab 14 (catalog size)
+    spending_asin_count: int = 0       # ASINs with AdSpend > 0 in period
+    low_order_campaign_count: int = 0  # campaigns with 1-3 orders in 30d
+
+    # ── Tab 08 campaign-type performance ─────────────────────────────────────
+    # avg ACoS by campaign naming prefix — for S053-S056, S064, S066
+    atm_avg_acos: float = 0.0          # avg ACoS of ATM_ campaigns
+    br_avg_acos: float = 0.0           # avg ACoS of BR_ campaigns
+    ph_avg_acos: float = 0.0           # avg ACoS of PH_ campaigns
+    ow_avg_acos: float = 0.0           # avg ACoS of OW_ campaigns
+    br_campaign_count: int = 0         # count of BR_ campaigns
+    ow_campaign_count: int = 0         # count of OW_ campaigns
+    ph_campaign_count: int = 0         # count of PH_ campaigns
+    has_both_watm_and_catchall: bool = False  # both WATM and CatchAll active simultaneously
+    bak_name_overlaps_ba: bool = False  # at least one BAK campaign name matches a BA campaign name
+
+    # ── Campaign-type outperforming signals (tab 08) ──────────────────────────
+    sd_flex_avg_acos: float = 0.0      # avg ACoS of SD_FLEX_ campaigns
+    sd_audi_avg_acos: float = 0.0      # avg ACoS of SD_AUDI_ campaigns
+    sd_prd_avg_acos: float = 0.0       # avg ACoS of SD_PRD_ campaigns
+    sb_avg_acos: float = 0.0           # avg ACoS of SB_ campaigns
+    sbv_avg_acos: float = 0.0          # avg ACoS of SBV_ campaigns
+    ow_avg_acos: float = 0.0           # avg ACoS of OW_ (exact match) campaigns
+    op_avg_acos: float = 0.0           # avg ACoS of OP_ (product target) campaigns
+    op_campaign_count: int = 0         # count of OP_ campaigns
+    catchall_orders: float = 0.0       # total orders from CatchAll campaigns
+    catsp_avg_acos: float = 0.0        # avg ACoS of CAT_SP_ campaigns
+
+    # ── ACoS change cadence (tab 24) ──────────────────────────────────────────
+    days_since_last_acos_change: int = 999  # days since most recent portal ACoS change
     # NEW: single-ASIN account flag
     parent_asin_count: int = 0        # unique parent ASINs in tab 15
 
@@ -504,6 +540,159 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
         if not pd.isna(r.get('ParentASIN')) and _safe_str(r.get('ParentASIN'))
     )
     ctx.parent_asin_count = len(parent_asins)
+
+    # ── tab 14 — ASIN-level derived signals ─────────────────────────────────────
+    try:
+        import pandas as _pd14
+        xl14 = _pd14.ExcelFile(pre_analysis_path, engine='calamine')
+        df14 = xl14.parse('14_Campaign_Performance_by_Adve', header=5)
+        df14 = df14.loc[:, ~df14.columns.astype(str).str.match(r'^Unnamed')]
+        df14 = df14.dropna(subset=['asin']) if 'asin' in df14.columns else df14
+
+        if not df14.empty and 'asin' in df14.columns:
+            tier_col     = 'Tier' if 'Tier' in df14.columns else None
+            ba_col       = 'BA_Spend' if 'BA_Spend' in df14.columns else None
+            atm_col      = 'ATM_Spend' if 'ATM_Spend' in df14.columns else None
+            orders_col   = 'Orders' if 'Orders' in df14.columns else None
+
+            # max orders per ASIN — for S014 (no top seller check)
+            if orders_col:
+                ctx.max_asin_orders_30d = float(df14[orders_col].fillna(0).max())
+
+            # slow movers (Tier not in 10/20/30) with BA spend — for S010/S011
+            if tier_col and ba_col:
+                top_tiers = {'TIER 10', 'TIER 20', 'TIER 30'}
+                is_slow   = ~df14[tier_col].astype(str).str.upper().isin(top_tiers)
+                has_ba    = df14[ba_col].fillna(0) > 0
+                ctx.slow_movers_with_ba = int((is_slow & has_ba).sum())
+
+            # ATM + BA overlap on high-velocity ASINs — for S013
+            if atm_col and ba_col and orders_col:
+                has_atm_spend  = df14[atm_col].fillna(0) > 0
+                has_ba_spend   = df14[ba_col].fillna(0) > 0
+                high_velocity  = df14[orders_col].fillna(0) > 80
+                ctx.atm_ba_overlap_count = int((has_atm_spend & has_ba_spend & high_velocity).sum())
+
+            # SPT spend on slow movers — for S031
+            spt_col = 'SPT_Spend' if 'SPT_Spend' in df14.columns else None
+            if tier_col and spt_col:
+                top_tiers = {'TIER 10', 'TIER 20', 'TIER 30'}
+                is_slow    = ~df14[tier_col].astype(str).str.upper().isin(top_tiers)
+                spt_total  = df14[spt_col].fillna(0).sum()
+                spt_slow   = df14.loc[is_slow, spt_col].fillna(0).sum()
+                ctx.spt_slow_mover_pct = spt_slow / spt_total if spt_total > 0 else 0.0
+
+            # Catalog vs spending ASIN counts — for S022
+            ctx.catalog_asin_count  = int(df14['asin'].dropna().nunique())
+            spend_col = 'AdSpend' if 'AdSpend' in df14.columns else None
+            if spend_col:
+                ctx.spending_asin_count = int(df14[df14[spend_col].fillna(0) > 0]['asin'].dropna().nunique())
+    except Exception:
+        pass
+
+    # ── tab 24 — days since last ACoS change ─────────────────────────────────────
+    try:
+        import pandas as _pd24
+        from datetime import datetime as _dt
+        xl24 = _pd24.ExcelFile(pre_analysis_path, engine='calamine')
+        df24 = xl24.parse('24_Account_ACoS_Changes_History', header=5)
+        df24 = df24.loc[:, ~df24.columns.astype(str).str.match(r'^Unnamed')]
+        if not df24.empty and 'Change_Date' in df24.columns:
+            dates = _pd24.to_datetime(df24['Change_Date'], errors='coerce').dropna()
+            if not dates.empty:
+                last_change = dates.max()
+                if ctx.downloaded is not None:
+                    ref = _pd24.Timestamp(ctx.downloaded)
+                elif ctx.ref_date is not None:
+                    ref = _pd24.Timestamp(ctx.ref_date)
+                else:
+                    ref = _pd24.Timestamp(_dt.now())
+                ctx.days_since_last_acos_change = max(0, int((ref - last_change).days))
+    except Exception:
+        pass
+
+    # ── tab 08 — campaign-type ACoS and structural signals ──────────────────────
+    try:
+        import pandas as _pd08
+        xl08 = _pd08.ExcelFile(pre_analysis_path, engine='calamine')
+        df08 = xl08.parse('08_Campaign_Report', header=5)
+        df08 = df08.loc[:, ~df08.columns.astype(str).str.match(r'^Unnamed')]
+
+        if not df08.empty and 'CampaignName' in df08.columns:
+            df08['_name'] = df08['CampaignName'].astype(str).str.strip()
+            df08['_name_up'] = df08['_name'].str.upper()
+            acos_col08 = '_ACOS' if '_ACOS' in df08.columns else ('ACoS' if 'ACoS' in df08.columns else None)
+
+            def _prefix_acos(prefix):
+                mask = df08['_name_up'].str.startswith(prefix)
+                if acos_col08 and mask.any():
+                    vals = _pd08.to_numeric(df08.loc[mask, acos_col08], errors='coerce').dropna()
+                    return float(vals.mean()) if not vals.empty else 0.0
+                return 0.0
+
+            def _prefix_count(prefix):
+                return int(df08['_name_up'].str.startswith(prefix).sum())
+
+            ctx.atm_avg_acos = _prefix_acos('ATM_')
+            ctx.br_avg_acos  = _prefix_acos('BR_')
+            ctx.ph_avg_acos  = _prefix_acos('PH_')
+            ctx.ow_avg_acos  = _prefix_acos('OW_')
+            ctx.br_campaign_count = _prefix_count('BR_')
+            ctx.ow_campaign_count = _prefix_count('OW_')
+            ctx.ph_campaign_count = _prefix_count('PH_')
+
+            # Low-order campaign count — for S041
+            orders_col08 = 'Orders' if 'Orders' in df08.columns else None
+            if orders_col08:
+                lo = df08[orders_col08].fillna(0)
+                ctx.low_order_campaign_count = int(((lo >= 1) & (lo <= 3)).sum())
+
+            # Both WATM and CatchAll active — for S076
+            sub_col = 'CampaignSubType' if 'CampaignSubType' in df08.columns else None
+            has_watm08 = (
+                (sub_col and (df08[sub_col].astype(str).str.upper() == 'WATM').any())
+                or df08['_name_up'].str.startswith('WATM_').any()
+            )
+            has_catchall08 = df08['_name'].str.lower().str.contains(r'catch.?all', regex=True).any()
+            ctx.has_both_watm_and_catchall = bool(has_watm08 and has_catchall08)
+
+            # BAK name overlaps BA name — for S038
+            if sub_col:
+                ba_names  = set(df08.loc[df08[sub_col].astype(str).str.upper() == 'BA', '_name'].tolist())
+                bak_names = set(df08.loc[df08[sub_col].astype(str).str.upper() == 'BAK', '_name'].tolist())
+                # check if any BAK shares the same parent-ASIN token as a BA
+                def _extract_token(n):
+                    # e.g. BA_P_APRQ8M786493_... → APRQ8M786493
+                    parts = str(n).split('_')
+                    return parts[2] if len(parts) > 2 else n
+                ba_tokens  = {_extract_token(n) for n in ba_names}
+                bak_tokens = {_extract_token(n) for n in bak_names}
+                ctx.bak_name_overlaps_ba = bool(ba_tokens & bak_tokens)
+
+            # Campaign-type outperforming signals — new controls S034/S035/S042/S043/S057-S060
+            def _pfx_acos(pfx):
+                mask = df08['_name_up'].str.startswith(pfx)
+                if acos_col08 and mask.any():
+                    vals = _pd08.to_numeric(df08.loc[mask, acos_col08], errors='coerce').dropna()
+                    return float(vals.mean()) if not vals.empty else 0.0
+                return 0.0
+
+            ctx.sd_flex_avg_acos = _pfx_acos('SD_FLEX_')
+            ctx.sd_audi_avg_acos = _pfx_acos('SD_AUDI_')
+            ctx.sd_prd_avg_acos  = _pfx_acos('SD_PRD_')
+            ctx.sb_avg_acos      = _pfx_acos('SB_')
+            ctx.sbv_avg_acos     = _pfx_acos('SBV_')
+            ctx.ow_avg_acos      = _pfx_acos('OW_')
+            ctx.op_avg_acos      = _pfx_acos('OP_')
+            ctx.op_campaign_count = _prefix_count('OP_')
+            ctx.catsp_avg_acos   = _pfx_acos('CAT_SP_')
+
+            # CatchAll orders
+            if orders_col08:
+                ca_mask = df08['_name'].str.lower().str.contains(r'catch.?all', regex=True, na=False)
+                ctx.catchall_orders = float(df08.loc[ca_mask, orders_col08].fillna(0).sum())
+    except Exception:
+        pass
 
     # ── tab 08 — portfolio coverage ratio ─────────────────────────────────────
     # Already read campaign_names above; re-use those records for portfolio count
