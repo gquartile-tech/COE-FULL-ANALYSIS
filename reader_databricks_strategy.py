@@ -9,7 +9,8 @@ Tabs consumed
 02  Date Range KPIs          → account-level ACoS, TACoS, CPC, spend, sales
 08  Campaign Report          → campaign names, subtypes, spend, portfolio assignment
 10  Campaigns Grouped by QT  → spend % per campaign subtype (ATM, BAK, BA, SPT, WATM, etc.)
-15  Campaign Perf by Parent  → ASIN tier data
+14  Campaign Perf by Child ASIN → slow mover detection (<3 orders), ATM/BA overlap, SPT on Tier 100
+15  Campaign Perf by Parent   → parent ASIN count (single-ASIN account detection)
 24  ACoS Changes History     → change frequency + direction in last 30 days
 25  Portfolio Insights       → portfolio names, IsManaged, has budget cap
 33  RBO Configuration        → whether any RBO rules exist
@@ -222,10 +223,16 @@ class StrategyContext:
     tier1_with_atm: int = 0           # Tier1 ASINs that have ATM spend
 
     # ── Tab 14 ASIN-level derived signals ─────────────────────────────────────
-    slow_movers_with_ba: int = 0       # ASINs Tier<30 (slow movers) that have BA_Spend > 0
+    slow_movers_with_ba: int = 0       # ASINs with <3 orders AND BA_Spend > 0
+    slow_mover_asins_with_ba: list[str] = field(default_factory=list)   # ASIN IDs matching above
+    slow_mover_asins_with_atm: list[str] = field(default_factory=list)  # ASINs with <3 orders AND ATM_Spend > 0
+    tier100_with_spt_asins: list[str] = field(default_factory=list)     # Tier 100 ASINs with SPT_Spend > 0
     max_asin_orders_30d: float = 0.0   # highest order count for any single ASIN in period
     atm_ba_overlap_count: int = 0      # ASINs with ATM_Spend > 0 AND BA_Spend > 0 AND Orders > 80
-    spt_slow_mover_pct: float = 0.0    # pct of SPT spend on Tier<30 ASINs
+    atm_ba_overlap_asins: list[str] = field(default_factory=list)       # ASIN IDs + orders for S012 what_we_saw
+    spt_slow_mover_pct: float = 0.0    # pct of SPT spend on ASINs with <3 orders
+    spt_avg_acos: float = 0.0          # spend-weighted avg ACoS across SPT campaigns (tab 08)
+    bak_campaigns: list[dict] = field(default_factory=list)             # [{name, spend, pct_of_total, acos}]
     catalog_asin_count: int = 0        # total ASINs in tab 14 (catalog size)
     spending_asin_count: int = 0       # ASINs with AdSpend > 0 in period
     low_order_campaign_count: int = 0  # campaigns with 1-3 orders in 30d
@@ -335,6 +342,9 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
     d38 = _latest_record(d38_all)
     ctx.acos_constraint  = _safe_float(d38.get('ACOS_Constraint__c'))
     ctx.tacos_constraint = _safe_float(d38.get('TACoS_Constraint__c'))
+    # Fallback: if TACoS constraint is not documented, use actual TACoS as reference
+    if ctx.tacos_constraint == 0.0 and ctx.tacos_actual > 0:
+        ctx.tacos_constraint = ctx.tacos_actual * 100
 
     # ── tab 24 — ACoS change history ─────────────────────────────────────────
     changes = _tab_to_records(pa['24_Account_ACoS_Changes_History'])
@@ -553,40 +563,66 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
             tier_col     = 'Tier' if 'Tier' in df14.columns else None
             ba_col       = 'BA_Spend' if 'BA_Spend' in df14.columns else None
             atm_col      = 'ATM_Spend' if 'ATM_Spend' in df14.columns else None
+            spt_col      = 'SPT_Spend' if 'SPT_Spend' in df14.columns else None
             orders_col   = 'Orders' if 'Orders' in df14.columns else None
+            spend_col    = 'AdSpend' if 'AdSpend' in df14.columns else None
 
             # max orders per ASIN — for S014 (no top seller check)
             if orders_col:
                 ctx.max_asin_orders_30d = float(df14[orders_col].fillna(0).max())
 
-            # slow movers (Tier not in 10/20/30) with BA spend — for S010/S011
-            if tier_col and ba_col:
-                top_tiers = {'TIER 10', 'TIER 20', 'TIER 30'}
-                is_slow   = ~df14[tier_col].astype(str).str.upper().isin(top_tiers)
-                has_ba    = df14[ba_col].fillna(0) > 0
-                ctx.slow_movers_with_ba = int((is_slow & has_ba).sum())
+            # Global slow mover definition: < 3 orders in the period
+            if orders_col:
+                is_slow_mover = df14[orders_col].fillna(0) < 3
 
-            # ATM + BA overlap on high-velocity ASINs — for S013
-            if atm_col and ba_col and orders_col:
+                # Slow movers with BA spend — for S010/S011/S037
+                if ba_col is not None:
+                    has_ba = df14[ba_col].fillna(0) > 0
+                    slow_ba_mask = is_slow_mover & has_ba
+                    ctx.slow_movers_with_ba = int(slow_ba_mask.sum())
+                    ctx.slow_mover_asins_with_ba = list(df14.loc[slow_ba_mask, 'asin'].astype(str))
+
+                # Slow movers with ATM spend — informational, used in what_we_saw
+                if atm_col is not None:
+                    has_atm = df14[atm_col].fillna(0) > 0
+                    ctx.slow_mover_asins_with_atm = list(
+                        df14.loc[is_slow_mover & has_atm, 'asin'].astype(str)
+                    )
+
+                # Slow movers with SPT spend — for S031
+                if spt_col is not None:
+                    has_spt = df14[spt_col].fillna(0) > 0
+                    spt_total  = df14[spt_col].fillna(0).sum()
+                    spt_slow   = df14.loc[is_slow_mover, spt_col].fillna(0).sum()
+                    ctx.spt_slow_mover_pct = spt_slow / spt_total if spt_total > 0 else 0.0
+
+            # Tier 100 ASINs with SPT spend — for S031 (no Tier 100 in SPT)
+            if tier_col is not None and spt_col is not None:
+                is_tier100 = df14[tier_col].astype(str).str.upper() == 'TIER 100'
+                has_spt    = df14[spt_col].fillna(0) > 0
+                ctx.tier100_with_spt_asins = list(
+                    df14.loc[is_tier100 & has_spt, 'asin'].astype(str)
+                )
+
+            # ATM + BA overlap on high-velocity ASINs (>80 orders) — for S012/S013
+            if atm_col is not None and ba_col is not None and orders_col is not None:
                 has_atm_spend  = df14[atm_col].fillna(0) > 0
                 has_ba_spend   = df14[ba_col].fillna(0) > 0
                 high_velocity  = df14[orders_col].fillna(0) > 80
-                ctx.atm_ba_overlap_count = int((has_atm_spend & has_ba_spend & high_velocity).sum())
-
-            # SPT spend on slow movers — for S031
-            spt_col = 'SPT_Spend' if 'SPT_Spend' in df14.columns else None
-            if tier_col and spt_col:
-                top_tiers = {'TIER 10', 'TIER 20', 'TIER 30'}
-                is_slow    = ~df14[tier_col].astype(str).str.upper().isin(top_tiers)
-                spt_total  = df14[spt_col].fillna(0).sum()
-                spt_slow   = df14.loc[is_slow, spt_col].fillna(0).sum()
-                ctx.spt_slow_mover_pct = spt_slow / spt_total if spt_total > 0 else 0.0
+                overlap_mask   = has_atm_spend & has_ba_spend & high_velocity
+                ctx.atm_ba_overlap_count = int(overlap_mask.sum())
+                if ctx.atm_ba_overlap_count > 0:
+                    ctx.atm_ba_overlap_asins = [
+                        f"{row['asin']} ({int(row[orders_col])} orders)"
+                        for _, row in df14.loc[overlap_mask].iterrows()
+                    ]
 
             # Catalog vs spending ASIN counts — for S022
             ctx.catalog_asin_count  = int(df14['asin'].dropna().nunique())
-            spend_col = 'AdSpend' if 'AdSpend' in df14.columns else None
-            if spend_col:
-                ctx.spending_asin_count = int(df14[df14[spend_col].fillna(0) > 0]['asin'].dropna().nunique())
+            if spend_col is not None:
+                ctx.spending_asin_count = int(
+                    df14[df14[spend_col].fillna(0) > 0]['asin'].dropna().nunique()
+                )
     except Exception:
         pass
 
@@ -643,9 +679,39 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
 
             # Low-order campaign count — for S041
             orders_col08 = 'Orders' if 'Orders' in df08.columns else None
+            spend_col08  = 'Spend'  if 'Spend'  in df08.columns else None
             if orders_col08:
                 lo = df08[orders_col08].fillna(0)
                 ctx.low_order_campaign_count = int(((lo >= 1) & (lo <= 3)).sum())
+
+            # SPT spend-weighted avg ACoS — for S030
+            if sub_col and acos_col08 and spend_col08:
+                spt_mask = df08[sub_col].astype(str).str.upper() == 'SPT'
+                if spt_mask.any():
+                    spt_df   = df08.loc[spt_mask].copy()
+                    spt_acos = _pd08.to_numeric(spt_df[acos_col08], errors='coerce').fillna(0)
+                    spt_spnd = _pd08.to_numeric(spt_df[spend_col08], errors='coerce').fillna(0)
+                    total_spt_spend = spt_spnd.sum()
+                    if total_spt_spend > 0:
+                        ctx.spt_avg_acos = float((spt_acos * spt_spnd).sum() / total_spt_spend)
+
+            # BAK campaigns list — for S078 what_we_saw
+            if sub_col and acos_col08 and spend_col08:
+                bak_mask = df08[sub_col].astype(str).str.upper() == 'BAK'
+                if bak_mask.any():
+                    bak_df = df08.loc[bak_mask].copy()
+                    total_spend_acct = float(
+                        _pd08.to_numeric(df08[spend_col08], errors='coerce').fillna(0).sum()
+                    )
+                    for _, row in bak_df.iterrows():
+                        sp = float(_pd08.to_numeric(row.get(spend_col08), errors='coerce') or 0)
+                        ac = float(_pd08.to_numeric(row.get(acos_col08), errors='coerce') or 0)
+                        ctx.bak_campaigns.append({
+                            'name':         str(row.get('CampaignName', '')),
+                            'spend':        sp,
+                            'pct_of_total': sp / total_spend_acct if total_spend_acct > 0 else 0.0,
+                            'acos':         ac,
+                        })
 
             # Both WATM and CatchAll active — for S076
             sub_col = 'CampaignSubType' if 'CampaignSubType' in df08.columns else None
