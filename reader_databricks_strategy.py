@@ -290,6 +290,64 @@ class StrategyContext:
     mom_sales_change: float = 0.0       # MoM total sales change last month (decimal)
     l3m_tacos_avg: float = 0.0          # average TACoS over last 3 full months
 
+    # ── Salesforce account attributes (tab 38) ────────────────────────────────
+    primary_objective: str = ''          # e.g. 'Growth' | 'Profit Maximization (Efficiency, Margin, TACOS)' | etc.
+    primary_spend_kpi: str = ''          # 'ACOS' | 'ROAS' | 'TACOS'
+    repeat_purchase: str = ''            # 'High' | 'Medium' | 'Low'
+    commodity_or_brand: str = ''         # 'Commodity' | 'Brand'
+    sales_concentration: str = ''        # 'Low Concentration' | 'Medium Concentration' | 'High Concentration'
+    tacos_constraint_documented: bool = False  # True only when tab 38 has a real TACoS_Constraint__c value
+
+    # ── Tab 18 — category performance signals ────────────────────────────────
+    qualifying_category_count: int = 0   # categories with AsinCount>=30 AND TotalSalesPct>=5% (CAT_SP gate)
+
+    # ── Structural signals for new controls S126–S136 ────────────────────────
+    # S126 — branded + NB both significant in same auto layer
+    branded_nb_mixed_in_ba: bool = False  # branded_spend_pct > 0.20 AND non_branded_spend_pct > 0.20
+
+    # S127 — auto-to-manual ratio (tab 10 derived)
+    auto_spend_pct: float = 0.0           # (ATM + BA + WATM) as pct of total
+    manual_exact_pct: float = 0.0         # BAK pct (primary manual exact layer)
+
+    # S128 — BAK harvest stalled (tab 10 derived)
+    bak_underfed: bool = False            # pct_bak > 0 but pct_bak < pct_ba * 0.10
+
+    # S129 — own product page undefended (tab 10 + tab 08 derived)
+    has_ow: bool = False                  # any OW_ campaign in campaign names
+    ow_campaign_count: int = 0            # count of OW_ campaigns
+
+    # S130 — BR discovery layer
+    has_br: bool = False                  # any BR_ campaign active with spend
+
+    # S131 — OW own-page coverage (already has_ow above)
+
+    # S133 — BAK branded/NB mixed signal (tab 12 + tab 10 derived)
+    bak_branded_nb_mixed: bool = False    # branded_spend_pct > 0.40 AND non_branded_spend_pct > 0.20
+
+    # S134 — TACoS/ACoS divergence (already in trend fields above)
+
+    # S136 — CatchAll graduation overdue (catchall_orders already exists)
+
+    # ── Tab 17 top search terms (S105) ───────────────────────────────────────
+    unconverted_top_terms: int = 0        # top-30 terms with orders≥3 AND CVR≥10% (proxy for not-yet-in-BAK)
+
+    # ── Tab 14 inefficient ASIN spend (S107) ─────────────────────────────────
+    inefficient_asin_count: int = 0       # ASINs: AdSpend>$100 AND ACoS>1.5x constraint AND orders<5
+    paused_sb_count: int = 0             # SB campaigns with state=paused AND spend > 0
+    paused_sbv_count: int = 0            # SBV campaigns with state=paused AND spend > 0
+
+    # ── Tab 15 top-seller type coverage (S102) ────────────────────────────────
+    top_seller_type_gaps: int = 0         # Tier 10-30 ASINs missing ≥2 of (ATM, BAK, OP)
+
+    # ── Tab 08 BAK inefficiency signals (S053) ────────────────────────────────
+    inefficient_bak_count: int = 0        # BAK campaigns: spend>$200 AND ACoS>1.5x constraint AND orders<5
+
+    # ── Tab 08/10 BR inefficiency signals (S057) ─────────────────────────────
+    br_inefficiency_flag: bool = False    # pct_br>0.15 AND br_avg_acos>1.5x constraint AND above_acos
+
+    # ── Tab 38 monthly budget (S113) ─────────────────────────────────────────
+    monthly_budget: float = 0.0           # Monthly_Budget__c from tab 38 (0 = not documented)
+
 
 # ── main reader ───────────────────────────────────────────────────────────────
 
@@ -337,14 +395,23 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
     if ctx.cpc_last_year > 0 and ctx.cpc_current > 0:
         ctx.cpc_yoy_change_pct = (ctx.cpc_current - ctx.cpc_last_year) / ctx.cpc_last_year
 
-    # ── tab 38 — constraint ──────────────────────────────────────────────────
+    # ── tab 38 — constraint + Salesforce account attributes ─────────────────
     d38_all = _tab_to_records(pa['38_Client_Success_Insights_Repo'])
     d38 = _latest_record(d38_all)
     ctx.acos_constraint  = _safe_float(d38.get('ACOS_Constraint__c'))
     ctx.tacos_constraint = _safe_float(d38.get('TACoS_Constraint__c'))
+    ctx.tacos_constraint_documented = ctx.tacos_constraint > 0
     # Fallback: if TACoS constraint is not documented, use actual TACoS as reference
     if ctx.tacos_constraint == 0.0 and ctx.tacos_actual > 0:
         ctx.tacos_constraint = ctx.tacos_actual * 100
+    # Salesforce account attributes
+    ctx.primary_objective  = _safe_str(d38.get('Primary_Objective__c'))
+    ctx.primary_spend_kpi  = _safe_str(d38.get('Primary_Spend_KPI__c'))
+    ctx.repeat_purchase    = _safe_str(d38.get('Repeat_Purchase_Behavior__c'))
+    ctx.commodity_or_brand = _safe_str(d38.get('Commodity_Products_or_Branded_Products__c'))
+    ctx.sales_concentration = _safe_str(d38.get('Sales_Concentration__c'))
+    # Monthly budget — for S113 budget alignment check
+    ctx.monthly_budget = _safe_float(d38.get('Monthly_Budget__c'))
 
     # ── tab 24 — ACoS change history ─────────────────────────────────────────
     changes = _tab_to_records(pa['24_Account_ACoS_Changes_History'])
@@ -434,7 +501,8 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
     ctx.has_sbv              = any(re.search(r'\bSBV', n, re.IGNORECASE) for n in names)
     ctx.has_sd               = any(re.search(r'\bSD_', n, re.IGNORECASE) for n in names)
     ctx.has_watm             = any(re.search(r'\bWATM', n, re.IGNORECASE) for n in names)
-    ctx.has_catchall         = any(re.search(r'catch.?all|WATM', n, re.IGNORECASE) for n in names)
+    # has_catchall: only match campaigns with 'catch all' or 'catchall' in the name — NOT WATM
+    ctx.has_catchall         = any(re.search(r'catch.?all', n, re.IGNORECASE) for n in names)
     ctx.ba_campaign_count    = sum(
         1 for r in camp_records
         if _safe_str(r.get('CampaignSubType')).upper() == 'BA'
@@ -449,6 +517,15 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
     ctx.has_vcpm = any(re.search(r'\bVCPM\b', n, re.IGNORECASE) for n in names)
     ctx.watm_campaign_count = sum(
         1 for n in names if re.search(r'\bWATM\b', n, re.IGNORECASE)
+    )
+    # BR discovery and OW own-page coverage signals
+    ctx.has_br = any(
+        _safe_str(r.get('CampaignSubType')).upper() == 'BR'
+        for r in camp_records
+    )
+    ctx.has_ow = any(re.search(r'\bOW_', n, re.IGNORECASE) for n in names)
+    ctx.ow_campaign_count = sum(
+        1 for n in names if re.search(r'\bOW_', n, re.IGNORECASE)
     )
     # SBV naming compliance: all SBV campaigns should start with SBV_
     sbv_names = [n for n in names if re.search(r'\bSBV\b', n, re.IGNORECASE)]
@@ -551,6 +628,19 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
     )
     ctx.parent_asin_count = len(parent_asins)
 
+    # Top-seller type coverage gaps — for S102
+    # Check each Tier 10-30 ASIN: missing ≥2 of (ATM_Spend, BAK_Spend, OP_Spend) → counts as gap
+    gap_count = 0
+    for r in tier1:
+        missing = sum([
+            _safe_float(r.get('ATM_Spend')) == 0,
+            _safe_float(r.get('BAK_Spend')) == 0,
+            _safe_float(r.get('OP_Spend'))  == 0,
+        ])
+        if missing >= 2:
+            gap_count += 1
+    ctx.top_seller_type_gaps = gap_count
+
     # ── tab 14 — ASIN-level derived signals ─────────────────────────────────────
     try:
         import pandas as _pd14
@@ -623,6 +713,18 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
                 ctx.spending_asin_count = int(
                     df14[df14[spend_col].fillna(0) > 0]['asin'].dropna().nunique()
                 )
+
+            # Inefficient ASIN detection — for S107
+            # Fires when: AdSpend > $100 AND ACoS > 1.5x constraint AND Orders < 5
+            acos_col14 = 'ACoS' if 'ACoS' in df14.columns else None
+            if spend_col is not None and acos_col14 is not None and orders_col is not None and ctx.acos_constraint > 0:
+                threshold14 = (ctx.acos_constraint / 100) * 1.5
+                ineff14 = (
+                    (df14[spend_col].fillna(0) > 100) &
+                    (df14[acos_col14].fillna(0) > threshold14) &
+                    (df14[orders_col].fillna(0) < 5)
+                )
+                ctx.inefficient_asin_count = int(ineff14.sum())
     except Exception:
         pass
 
@@ -757,6 +859,27 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
             if orders_col08:
                 ca_mask = df08['_name'].str.lower().str.contains(r'catch.?all', regex=True, na=False)
                 ctx.catchall_orders = float(df08.loc[ca_mask, orders_col08].fillna(0).sum())
+
+            # Paused SB / SBV campaigns with historical spend — for S064/S066
+            if 'State' in df08.columns and spend_col08:
+                paused_mask = df08['State'].astype(str).str.lower() == 'paused'
+                spend_num   = _pd08.to_numeric(df08[spend_col08], errors='coerce').fillna(0)
+                had_spend   = spend_num > 0
+                sb_mask  = df08['_name_up'].str.startswith('SB_')
+                sbv_mask = df08['_name_up'].str.startswith('SBV_')
+                ctx.paused_sb_count  = int((paused_mask & had_spend & sb_mask  & ~sbv_mask).sum())
+                ctx.paused_sbv_count = int((paused_mask & had_spend & sbv_mask).sum())
+
+            # BAK inefficiency — for S053: spend>$200, ACoS>1.5x constraint, orders<5
+            if sub_col and acos_col08 and spend_col08 and orders_col08:
+                bak_mask2 = df08[sub_col].astype(str).str.upper() == 'BAK'
+                if bak_mask2.any() and ctx.acos_constraint > 0:
+                    bak_sp   = _pd08.to_numeric(df08[spend_col08],  errors='coerce').fillna(0)
+                    bak_ac   = _pd08.to_numeric(df08[acos_col08],   errors='coerce').fillna(0)
+                    bak_ord  = _pd08.to_numeric(df08[orders_col08], errors='coerce').fillna(0)
+                    threshold = (ctx.acos_constraint / 100) * 1.5
+                    ineff_mask = bak_mask2 & (bak_sp > 200) & (bak_ac > threshold) & (bak_ord < 5)
+                    ctx.inefficient_bak_count = int(ineff_mask.sum())
     except Exception:
         pass
 
@@ -789,6 +912,54 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
                 ctx.vcpm_spend_pct = _safe_float(r.get('Spend_Pct'))
     except Exception:
         pass
+
+    # ── tab 18 — category performance (CAT_SP qualification gate) ─────────────
+    try:
+        cat18_records = _tab_to_records(pa['18_Performance_by_Category'])
+        ctx.qualifying_category_count = sum(
+            1 for r in cat18_records
+            if _safe_float(r.get('AsinCount')) >= 30
+            and _safe_float(r.get('TotalSalesPct')) >= 0.05
+        )
+    except Exception:
+        pass
+
+    # ── tab 17 — top 30 search terms (S105 proxy) ────────────────────────────
+    try:
+        top17_records = _tab_to_records(pa['17_Top_30_Search_Terms'])
+        ctx.unconverted_top_terms = sum(
+            1 for r in top17_records
+            if _safe_float(r.get('orders')) >= 3
+            and _safe_float(r.get('cr')) >= 0.10
+        )
+    except Exception:
+        pass
+
+    # ── derived structural signals for new controls ───────────────────────────
+    # S126 — branded + NB both > 20% of search term spend in the same auto bucket
+    ctx.branded_nb_mixed_in_ba = (
+        ctx.branded_spend_pct > 0.20 and ctx.non_branded_spend_pct > 0.20
+    )
+    # S127 — auto spend dominance vs manual exact
+    ctx.auto_spend_pct   = ctx.pct_atm + ctx.pct_ba + ctx.pct_watm
+    ctx.manual_exact_pct = ctx.pct_bak
+    # S128 — BAK harvest stalled: BAK exists but is <10% of BA spend
+    ctx.bak_underfed = (
+        ctx.pct_bak > 0 and ctx.pct_ba > 0
+        and ctx.pct_bak < ctx.pct_ba * 0.10
+    )
+    # S133 — BAK bucket carries both heavy branded and NB (not split by type)
+    ctx.bak_branded_nb_mixed = (
+        ctx.branded_spend_pct > 0.40 and ctx.non_branded_spend_pct > 0.20
+        and ctx.pct_bak > 0
+    )
+    # S057 — BR strategy too broad: BR consuming >15% of spend at poor efficiency
+    ctx.br_inefficiency_flag = (
+        ctx.pct_br > 0.15
+        and ctx.acos_constraint > 0
+        and ctx.br_avg_acos > (ctx.acos_constraint / 100) * 1.5
+        and ctx.acos_actual * 100 > ctx.acos_constraint
+    )
 
     # ── tab 04 — L24M monthly trend signals ──────────────────────────────────
     try:
