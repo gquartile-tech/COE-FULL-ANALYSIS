@@ -459,40 +459,9 @@ def _eval_directional_delta(
 
 # ---- Benchmarks ----
 
-def _bench_compare_directional(our: float, bench: float, direction: str) -> float:
-    if bench == 0:
-        return float("inf")
-    dev = (our - bench) / bench
-    if direction == "higher_worse":
-        return max(dev, 0.0)
-    if direction == "lower_worse":
-        return max(-dev, 0.0)
-    return abs(dev)
-
-
-def _bench_status(dev: float, ok_th: float, partial_th: float) -> str:
-    if dev < ok_th:
-        return cfg.STATUS_OK
-    if dev <= partial_th:
-        return cfg.STATUS_PARTIAL
-    return cfg.STATUS_FLAG
-
-
-def _bench_status_directional(our: float, bench: float, direction: str) -> str:
-    dev = _bench_compare_directional(our, bench, direction)
-    return _bench_status(dev, ok_th=0.10, partial_th=0.25)
-
-
-def _bench_missing_ok(metric_label: str, src: str, why: str) -> cfg.ControlResult:
-    return ok(
-        f"{metric_label} benchmark comparison could not be evaluated — account or benchmark data is missing.",
-        why,
-        src,
-    )
-
 
 # -------------------------
-# Controls (C001–C026)
+# Controls (C001–C020, active: C001–C014, C016, C019, C020)
 # -------------------------
 
 def eval_C001(ctx: DatabricksContext) -> cfg.ControlResult:
@@ -785,13 +754,6 @@ def eval_C014(ctx: DatabricksContext) -> cfg.ControlResult:
     )
 
 
-def eval_C015(ctx: DatabricksContext) -> cfg.ControlResult:
-    return ok(
-        "Organic rank data is not yet available in the Databricks export — this control is pending integration.",
-        "Organic rank indicates whether advertising investment is contributing to long-term organic visibility. It will be evaluated once the external data source is connected.",
-        "External dataset (pending)",
-    )
-
 
 def eval_C016(ctx: DatabricksContext) -> cfg.ControlResult:
     df42 = get_dataset(ctx, "GGS_DOMO")
@@ -842,38 +804,6 @@ def eval_C016(ctx: DatabricksContext) -> cfg.ControlResult:
     return ok(what, why, src)
 
 
-def eval_C017(ctx: DatabricksContext) -> cfg.ControlResult:
-    df42 = get_dataset(ctx, "GGS_DOMO")
-    src = "42_Amazon_GGS_Domo!K7/K8/K9"
-    why = "DAA pacing flags show whether key demand acceleration investments are on track."
-    if df42 is None or df42.empty:
-        return ok("GGS Domo tab is missing — DAA pacing not evaluated.", why, src)
-    k7 = _read_str_cell_by_pos(df42, "K", 7).lower()
-    k8 = _read_str_cell_by_pos(df42, "K", 8).lower()
-    k9 = _read_str_cell_by_pos(df42, "K", 9).lower()
-    if not (k7 or k8 or k9):
-        return ok("DAA pacing fields are missing in the GGS Domo tab (K7–K9) — not evaluated.", why, src)
-    what = f"DAA pacing flags (SD/SP/SB) = {k7}/{k8}/{k9}."
-    if any(v == "true" for v in [k7, k8, k9]):
-        return partial(what, why, src)
-    return ok(what, why, src)
-
-
-def eval_C018(ctx: DatabricksContext) -> cfg.ControlResult:
-    df42 = get_dataset(ctx, "GGS_DOMO")
-    src = "42_Amazon_GGS_Domo!M7/M8/M9"
-    why = "SAS pacing flags show whether strategic support initiatives are executing as committed."
-    if df42 is None or df42.empty:
-        return ok("GGS Domo tab is missing — SAS pacing not evaluated.", why, src)
-    m7 = _read_str_cell_by_pos(df42, "M", 7).lower()
-    m8 = _read_str_cell_by_pos(df42, "M", 8).lower()
-    m9 = _read_str_cell_by_pos(df42, "M", 9).lower()
-    if not (m7 or m8 or m9):
-        return ok("SAS pacing fields are missing in the GGS Domo tab (M7–M9) — not evaluated.", why, src)
-    what = f"SAS pacing flags (SD/SP/SB) = {m7}/{m8}/{m9}."
-    if any(v == "true" for v in [m7, m8, m9]):
-        return partial(what, why, src)
-    return ok(what, why, src)
 
 
 def eval_C019(ctx: DatabricksContext) -> cfg.ControlResult:
@@ -1017,156 +947,6 @@ def eval_C020(ctx: DatabricksContext) -> cfg.ControlResult:
     return ok(what, why, src)
 
 
-def eval_C021(ctx: DatabricksContext) -> cfg.ControlResult:
-    df = get_dataset(ctx, "COHORT_BENCH")
-    src = "43_Cohort_Main_Category_Perform!B7 vs J7"
-    why = _why_benchmark("ACoS", "higher_worse")
-
-    if df is None or df.empty:
-        return _bench_missing_ok("ACoS", src, why)
-
-    our = _read_cell_by_pos(df, "B", 7)
-    bench = _read_cell_by_pos(df, "J", 7)
-    if our is None or bench is None or bench == 0:
-        return _bench_missing_ok("ACoS", src, why)
-
-    if our > 1:
-        our /= 100
-    if bench > 1:
-        bench /= 100
-
-    status = _bench_status_directional(our, bench, "higher_worse")
-    what = (
-        f"ACoS is {'above' if our > bench else 'in line with or below'} the category benchmark. "
-        f"Benchmark: {_pct_str(bench)} | Actual: {_pct_str(our)}."
-    )
-    return cfg.ControlResult(status=status, what_we_saw=what, why_it_matters=why, data_source=src)
-
-
-def eval_C022(ctx: DatabricksContext) -> cfg.ControlResult:
-    df = get_dataset(ctx, "COHORT_BENCH")
-    src = "43_Cohort_Main_Category_Perform!D7 vs N7"
-    why = _why_benchmark("Conversion Rate", "lower_worse")
-
-    if df is None or df.empty:
-        return _bench_missing_ok("Conversion Rate", src, why)
-
-    our = _read_cell_by_pos(df, "D", 7)
-    bench = _read_cell_by_pos(df, "N", 7)
-    if our is None or bench is None or bench == 0:
-        return _bench_missing_ok("Conversion Rate", src, why)
-
-    if our > 1:
-        our /= 100
-    if bench > 1:
-        bench /= 100
-
-    status = _bench_status_directional(our, bench, "lower_worse")
-    what = (
-        f"Conversion Rate is {'below' if our < bench else 'in line with or above'} the category benchmark. "
-        f"Benchmark: {_pct_str(bench)} | Actual: {_pct_str(our)}."
-    )
-    return cfg.ControlResult(status=status, what_we_saw=what, why_it_matters=why, data_source=src)
-
-
-def eval_C023(ctx: DatabricksContext) -> cfg.ControlResult:
-    df = get_dataset(ctx, "COHORT_BENCH")
-    src = "43_Cohort_Main_Category_Perform!C7 vs L7"
-    why = _why_benchmark("TACoS", "higher_worse")
-
-    if df is None or df.empty:
-        return _bench_missing_ok("TACoS", src, why)
-
-    our = _read_cell_by_pos(df, "C", 7)
-    bench = _read_cell_by_pos(df, "L", 7)
-    if our is None or bench is None or bench == 0:
-        return _bench_missing_ok("TACoS", src, why)
-
-    if our > 1:
-        our /= 100
-    if bench > 1:
-        bench /= 100
-
-    status = _bench_status_directional(our, bench, "higher_worse")
-    what = (
-        f"TACoS is {'above' if our > bench else 'in line with or below'} the category benchmark. "
-        f"Benchmark: {_pct_str(bench)} | Actual: {_pct_str(our)}."
-    )
-    return cfg.ControlResult(status=status, what_we_saw=what, why_it_matters=why, data_source=src)
-
-
-def eval_C024(ctx: DatabricksContext) -> cfg.ControlResult:
-    df = get_dataset(ctx, "COHORT_BENCH")
-    src = "43_Cohort_Main_Category_Perform!E7 vs P7"
-    why = _why_benchmark("CPC", "higher_worse")
-
-    if df is None or df.empty:
-        return _bench_missing_ok("CPC", src, why)
-
-    our = _read_cell_by_pos(df, "E", 7)
-    bench = _read_cell_by_pos(df, "P", 7)
-    if our is None or bench is None or bench == 0:
-        return _bench_missing_ok("CPC", src, why)
-
-    status = _bench_status_directional(our, bench, "higher_worse")
-    what = (
-        f"CPC is {'above' if our > bench else 'in line with or below'} the category benchmark. "
-        f"Benchmark: {_money_str_2(bench)} | Actual: {_money_str_2(our)}."
-    )
-    return cfg.ControlResult(status=status, what_we_saw=what, why_it_matters=why, data_source=src)
-
-
-def eval_C025(ctx: DatabricksContext) -> cfg.ControlResult:
-    df = get_dataset(ctx, "COHORT_BENCH")
-    src = "43_Cohort_Main_Category_Perform!F7 vs R7"
-    why = _why_benchmark("Organic Sales Rate", "lower_worse")
-
-    if df is None or df.empty:
-        return _bench_missing_ok("Organic Sales Rate", src, why)
-
-    our = _read_cell_by_pos(df, "F", 7)
-    bench = _read_cell_by_pos(df, "R", 7)
-    if our is None or bench is None or bench == 0:
-        return _bench_missing_ok("Organic Sales Rate", src, why)
-
-    if our > 1:
-        our /= 100
-    if bench > 1:
-        bench /= 100
-
-    status = _bench_status_directional(our, bench, "lower_worse")
-    what = (
-        f"Organic Sales Rate is {'below' if our < bench else 'in line with or above'} the category benchmark. "
-        f"Benchmark: {_pct_str(bench)} | Actual: {_pct_str(our)}."
-    )
-    return cfg.ControlResult(status=status, what_we_saw=what, why_it_matters=why, data_source=src)
-
-
-def eval_C026(ctx: DatabricksContext) -> cfg.ControlResult:
-    df = get_dataset(ctx, "COHORT_BENCH")
-    src = "43_Cohort_Main_Category_Perform!G7 vs T7"
-    why = _why_benchmark("Sales Growth", "lower_worse")
-
-    if df is None or df.empty:
-        return _bench_missing_ok("Sales Growth", src, why)
-
-    our = _read_cell_by_pos(df, "G", 7)
-    bench = _read_cell_by_pos(df, "T", 7)
-    if our is None or bench is None or bench == 0:
-        return _bench_missing_ok("Sales Growth", src, why)
-
-    if our > 1:
-        our /= 100
-    if bench > 1:
-        bench /= 100
-
-    status = _bench_status_directional(our, bench, "lower_worse")
-    what = (
-        f"Sales Growth is {'below' if our < bench else 'in line with or above'} the category benchmark. "
-        f"Benchmark: {_pct_str(bench)} | Actual: {_pct_str(our)}."
-    )
-    return cfg.ControlResult(status=status, what_we_saw=what, why_it_matters=why, data_source=src)
-
 
 def evaluate_all(ctx: DatabricksContext) -> Tuple[Dict[str, cfg.ControlResult], DatabricksContext]:
     ctx = hydrate_constraints_and_context(ctx)
@@ -1186,18 +966,9 @@ def evaluate_all(ctx: DatabricksContext) -> Tuple[Dict[str, cfg.ControlResult], 
         "C012": eval_C012,
         "C013": eval_C013,
         "C014": eval_C014,
-        "C015": eval_C015,
         "C016": eval_C016,
-        "C017": eval_C017,
-        "C018": eval_C018,
         "C019": eval_C019,
         "C020": eval_C020,
-        "C021": eval_C021,
-        "C022": eval_C022,
-        "C023": eval_C023,
-        "C024": eval_C024,
-        "C025": eval_C025,
-        "C026": eval_C026,
     }
 
     results: Dict[str, cfg.ControlResult] = {}

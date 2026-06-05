@@ -40,9 +40,6 @@ TAB_CANDIDATES: Dict[str, List[str]] = {
     # GGS & commitment
     "GGS_DOMO": ["42_Amazon_GGS_Domo"],
 
-    # Benchmarks
-    "COHORT_BENCH": ["43_Cohort_Main_Category_Perform"],
-
     # Payments / Financial risk
     "STRIPE": ["46_Stripe_Payments"],
 }
