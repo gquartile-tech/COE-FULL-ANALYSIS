@@ -11,7 +11,42 @@ from reader_databricks_mastery import DatabricksContext, clean_text, money_str, 
 OBJECTIVE_WORDS = {'objective', 'goal', 'grow', 'growth', 'scale', 'increase', 'improve', 'stabilize', 'maintain', 'reduce', 'defend', 'accelerate', 'awareness', 'sales', 'profit', 'profitability', 'ranking', 'market share'}
 KPI_WORDS = {'roas', 'acos', 'tacos', 'spend', 'sales', 'cvr', 'ctr', 'cpc', 'ntb', 'rank', 'revenue'}
 CONSTRAINT_WORDS = {'constraint', 'below', 'above', 'maintain', 'limit', 'threshold', 'guardrail', 'while', 'without', 'at or below'}
-CHALLENGE_WORDS = {'challenge', 'issue', 'risk', 'inventory', 'out-of-stock', 'out of stock', 'slowdown', 'pressure', 'volatility', 'sensitive', 'buy box', 'listing', 'margin', 'competition', 'competitive', 'growth is not', 'not meeting', 'incomplete', 'dissatisfied'}
+CHALLENGE_WORDS = {'challenge', 'issue', 'risk', 'inventory', 'out-of-stock', 'out of stock', 'slowdown', 'pressure', 'volatility', 'sensitive', 'buy box', 'listing', 'margin', 'competition', 'competitive', 'growth is not', 'not meeting', 'incomplete', 'dissatisfied', 'struggling', 'difficult', 'barrier', 'blocker', 'problem', 'concern', 'lack', 'limited', 'unable', 'falling', 'declined', 'losing'}
+
+# Strong operational constraint signals — used by C005 cross-field check.
+# Must be explicit enough to distinguish a real constraint from general commentary.
+CONSTRAINT_SIGNALS = {
+    'inventory', 'out of stock', 'out-of-stock', 'stock constraint', 'stock limit',
+    'price increase', 'pricing constraint', 'price cap', 'margin constraint', 'margin limit',
+    'budget cap', 'budget constraint', 'budget limit', 'spend cap', 'spend limit',
+    'product restriction', 'category restriction', 'listing restriction', 'policy restriction',
+    'restricted', 'ip constraint', 'ip restriction', 'intellectual property',
+    'reseller', 'buy box constraint', 'buy box issue',
+    'logistics', 'shipping constraint', 'fulfillment constraint',
+    'cash flow', 'financial constraint',
+    'cannot advertise', 'not allowed', 'compliance',
+    'seasonal cap', 'seasonal constraint',
+}
+
+# Tactical campaign actions — used by C001 to catch AY7 filled with
+# campaign tactics instead of a strategic business objective.
+TACTICAL_ONLY_WORDS = {
+    'increase budget', 'decrease budget', 'raise budget', 'lower budget',
+    'increase bids', 'lower bids', 'adjust bids', 'bid adjustment',
+    'pause campaign', 'launch campaign', 'add campaign', 'create campaign',
+    'add keywords', 'add negatives', 'add negative keywords',
+    'change match type', 'update targeting', 'fix targeting',
+    'increase daily budget', 'decrease daily budget',
+}
+
+# Business outcome words — used by C001 to confirm the objective is strategic.
+BUSINESS_OUTCOME_WORDS = {
+    'sales', 'revenue', 'profit', 'profitability', 'growth', 'market share',
+    'organic rank', 'organic ranking', 'brand awareness', 'new to brand',
+    'customer acquisition', 'return', 'roas', 'tacos', 'acos',
+    'yoy', 'year over year', 'year-over-year', 'quarter', 'quarterly',
+    'margin', 'efficiency', 'ntb', 'new customers', 'brand growth',
+}
 TIME_WORDS = {'q1', 'q2', 'q3', 'q4', 'month', 'monthly', 'weekly', 'this period', 'near-term', 'near term', 'next', 'current period', 'prime day', 'holiday', 'bfcm', 'seasonal'}
 CONFLICT_WORDS = {'but', 'however', 'while', 'tradeoff', 'trade-off', 'contrasting', 'despite', 'volatility', 'elevated', 'balancing'}
 BESTSELLER_WORDS = {'bestseller', 'best seller', 'hero', 'top perf', 'top perf.', 'top', 'winner', 'core', 'priority', 'best-seller'}
@@ -209,24 +244,29 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
     # -------------------------------------------------------------------------
     # C001 — Objective Clearly Defined
     # Reads AY7 — the primary objective field.
-    # Scores against three word groups: objective words, KPI words, action verbs.
-    # Needs 3/3 for OK, 2/3 for PARTIAL, below that FLAGS.
+    # OK:      has a business outcome word AND at least one number/KPI value OR
+    #          has multiple distinct business outcome signals (2+).
+    # PARTIAL: has a business outcome word but no measurable anchor, OR the
+    #          text is present but relies entirely on tactical campaign actions.
+    # FLAG:    empty, or no business outcome language at all.
     # -------------------------------------------------------------------------
     txt = ctx.ay
+    t_lower = clean_text(txt).lower() if txt else ''
     if not txt:
         r['C001'] = ControlResult('FLAG', 'No primary objective is written in the account notes (AY7).', WHY['C001'], SOURCES['C001'])
     else:
-        score = sum([
-            has_any(txt, OBJECTIVE_WORDS),
-            has_any(txt, KPI_WORDS | {'awareness', 'ranking', 'market share'}),
-            any(w in txt.lower() for w in ['gain', 'grow', 'increase', 'improve', 'stabilize', 'maintain', 'scale', 'accelerate']),
-        ])
-        if score >= 3:
+        has_outcome = has_any(t_lower, BUSINESS_OUTCOME_WORDS)
+        has_number = bool(re.search(r'\d+\s*%|\$\s*\d+|\d+\s*x\b|\d+[kKmM]\b|\bROAS\b|\bACoS\b|\bTACoS\b', txt, re.I))
+        outcome_count = sum(1 for w in BUSINESS_OUTCOME_WORDS if w in t_lower)
+        is_purely_tactical = has_any(t_lower, TACTICAL_ONLY_WORDS) and not has_outcome
+        if is_purely_tactical:
+            r['C001'] = ControlResult('PARTIAL', 'The objective field describes campaign actions, not a business goal. Rewrite it to focus on the business outcome (e.g. growth, profitability, market share).', WHY['C001'], SOURCES['C001'])
+        elif has_outcome and (has_number or outcome_count >= 2):
             r['C001'] = ControlResult('OK', 'Primary objective is documented and linked to a clear business outcome.', WHY['C001'], SOURCES['C001'])
-        elif score == 2:
-            r['C001'] = ControlResult('PARTIAL', 'Objective is written, but it is not clearly linked to a measurable KPI or a specific business result.', WHY['C001'], SOURCES['C001'])
+        elif has_outcome:
+            r['C001'] = ControlResult('PARTIAL', 'Objective is written, but it is not anchored to a measurable target or specific KPI. Add a number or metric to make it actionable.', WHY['C001'], SOURCES['C001'])
         else:
-            r['C001'] = ControlResult('FLAG', 'Objective is written, but the language is too vague to use as a clear direction for this account.', WHY['C001'], SOURCES['C001'])
+            r['C001'] = ControlResult('FLAG', 'The objective field does not contain a clear business goal. It needs to explain what the account is trying to achieve and why.', WHY['C001'], SOURCES['C001'])
 
     # -------------------------------------------------------------------------
     # C002 — Objective vs Near-Term Alignment
@@ -259,13 +299,28 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
 
     # -------------------------------------------------------------------------
     # C003 — Account Challenges Documented
+    # Reads BN7.
+    # FLAG:    empty, OR field contains target/goal content instead of challenges
+    #          (detected when 2+ metric target patterns present but no barrier language).
+    # PARTIAL: content present but shallow — single issue, no specifics, or
+    #          too short to be useful (<12 words and no challenge keywords).
+    # OK:      specific challenges documented with barrier/problem language.
     # -------------------------------------------------------------------------
     txt = ctx.bn
     if not txt:
         r['C003'] = ControlResult('FLAG', 'No current challenges are documented in the account notes (BN7).', WHY['C003'], SOURCES['C003'])
     else:
-        specific = len(txt.split()) >= 12 and has_any(txt, CHALLENGE_WORDS)
-        if specific:
+        t_lower = clean_text(txt).lower()
+        # Detect wrong-content: metric targets filling the challenges field
+        metric_target_count = len(re.findall(
+            r'\b(acos|tacos|roas|spend|sales|revenue)\b.{0,30}(\d+\s*%|\$\s*\d+|\d+\s*x\b)',
+            t_lower, re.I
+        ))
+        has_barrier = has_any(t_lower, CHALLENGE_WORDS)
+        has_specific = len(txt.split()) >= 12 and has_barrier
+        if metric_target_count >= 2 and not has_barrier:
+            r['C003'] = ControlResult('FLAG', 'The challenges field contains performance targets, not challenges. Replace the content with the actual blockers and issues the account is facing.', WHY['C003'], SOURCES['C003'])
+        elif has_specific:
             r['C003'] = ControlResult('OK', 'Current challenges are documented with enough detail to understand the active account blockers.', WHY['C003'], SOURCES['C003'])
         elif len(txt.split()) >= 6:
             r['C003'] = ControlResult('PARTIAL', 'Challenges are written, but the description is too general. It does not clearly explain what is blocking the account today.', WHY['C003'], SOURCES['C003'])
@@ -290,9 +345,71 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
 
     # -------------------------------------------------------------------------
     # C005 — Operational Constraints Awareness
-    # Hardcoded to OK — field data is not reliable enough to evaluate.
+    # Reads AL7 (Yes/No) and cross-checks AY7 + AM7 + BN7 for strong constraint signals.
+    #
+    # Four scenarios:
+    # 1. AL7 = No  + no signals in other fields  → OK  (consistent, no constraints)
+    # 2. AL7 = No  + strong signals in other fields → PARTIAL (default No, constraints exist)
+    # 3. AL7 = Yes + signals found or detail present → OK (acknowledged and supported)
+    # 4. AL7 = Yes + no signals and no detail → PARTIAL (acknowledged but not documented)
+    #
+    # Contradiction (AL7 = No + explicit constraint language like "product restriction") → FLAG
     # -------------------------------------------------------------------------
-    r['C005'] = ControlResult('OK', 'Operational constraints check is not evaluated automatically.', WHY['C005'], SOURCES['C005'])
+    al7 = clean_text(ctx.al).lower().strip() if ctx.al else ''
+    al7_yes = al7 == 'yes'
+    al7_no  = al7 in ('no', '')
+
+    # Scan narrative fields for strong constraint signals
+    narrative = ' '.join([
+        clean_text(ctx.ay).lower(),
+        clean_text(ctx.am).lower(),
+        clean_text(ctx.bn).lower(),
+    ])
+    signals_found = [sig for sig in CONSTRAINT_SIGNALS if sig in narrative]
+    strong_signals = [s for s in signals_found if any(w in s for w in [
+        'restriction', 'restricted', 'cannot advertise', 'not allowed',
+        'compliance', 'intellectual property', 'logistics', 'cash flow',
+    ])]
+
+    if al7_yes:
+        if signals_found:
+            detail_preview = signals_found[0]
+            r['C005'] = ControlResult(
+                'OK',
+                f'Operational constraints are acknowledged in AL7. Supporting signals found in account notes: {detail_preview}.',
+                WHY['C005'], SOURCES['C005']
+            )
+        else:
+            r['C005'] = ControlResult(
+                'PARTIAL',
+                'AL7 marks constraints as present, but no constraint detail was found in the objective, context, or challenges fields. Document what the constraints are.',
+                WHY['C005'], SOURCES['C005']
+            )
+    elif al7_no:
+        if strong_signals:
+            r['C005'] = ControlResult(
+                'FLAG',
+                f'AL7 says no constraints, but the account notes mention: {strong_signals[0]}. Update AL7 and document the constraint properly.',
+                WHY['C005'], SOURCES['C005']
+            )
+        elif signals_found:
+            r['C005'] = ControlResult(
+                'PARTIAL',
+                f'AL7 says no constraints, but the account notes mention: {signals_found[0]}. Check if this is an operational constraint and update AL7 if needed.',
+                WHY['C005'], SOURCES['C005']
+            )
+        else:
+            r['C005'] = ControlResult(
+                'OK',
+                'No operational constraints are documented or detected in the account notes. AL7 is consistent.',
+                WHY['C005'], SOURCES['C005']
+            )
+    else:
+        r['C005'] = ControlResult(
+            'PARTIAL',
+            'AL7 (operational constraints field) has not been filled in. Mark it as Yes or No.',
+            WHY['C005'], SOURCES['C005']
+        )
 
     # -------------------------------------------------------------------------
     # C006 — Client Journey Map

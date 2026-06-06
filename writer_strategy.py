@@ -687,10 +687,10 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
         if coverage < 0.60:
             flag('S082', 'PARTIAL')
 
-    # S083 — WATM or CatchAll coverage gap.
+    # S083 — WATM and CatchAll active simultaneously (redundant overlap).
     has_watm_active     = ctx.watm_campaign_count > 0
     has_catchall_active = ctx.has_catchall
-    if not (has_watm_active and has_catchall_active):
+    if has_watm_active and has_catchall_active:
         flag('S083', 'FLAG')
 
     # S084 — WATM spend < 3% of total (WATM not getting meaningful budget).
@@ -934,16 +934,15 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
 
 def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str, str]:
     """
-    Returns {control_id: text} with plain-language What We Saw sentences
-    built from real account numbers, for every control that fired.
+    Returns {control_id: text} for every control that fired.
+    Each block matches its flag condition. All numbers come from ctx.
+    Short sentences only. No jargon. Written for non-native English speakers.
+    SIDs with no flag rule (S024/S033/S036/S040/S044/S052/S059/S061/S127-S130)
+    are MANUAL or have no automatable signal — no block needed.
     """
     texts: dict[str, str] = {}
 
-    # Working constraint — same fallback logic as _compute_flags.
-    # When no constraint is documented, use current ACoS/TACoS + 5pp
-    # so f-string references produce a meaningful number instead of 0 or NameError.
     constraint = ctx.acos_constraint if ctx.acos_constraint > 0 else (ctx.acos_actual * 100 + 5.0)
-    tacos_con  = ctx.tacos_constraint if ctx.tacos_constraint > 0 else (ctx.tacos_actual * 100 + 5.0)
 
     def pct(v: float) -> str:
         return f'{v:.0%}'
@@ -951,6 +950,7 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
     def dollar(v: float) -> str:
         return f'${v:,.0f}'
 
+    # S002 — ACoS target above constraint
     if 'S002' in flags:
         texts['S002'] = (
             f'The current ACoS target is {ctx.acos_current_target:.0f}%. '
@@ -959,6 +959,59 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
             f'The target needs to come down to align with the client objective.'
         )
 
+    # S003 — TACoS actual above constraint
+    if 'S003' in flags:
+        tacos_gap = ctx.tacos_actual * 100 - ctx.tacos_constraint
+        texts['S003'] = (
+            f'TACoS is {ctx.tacos_actual:.0%}. '
+            f'The TACoS constraint is {ctx.tacos_constraint:.0f}%. '
+            f'The gap is +{tacos_gap:.1f} percentage points. '
+            f'Reducing ACoS indirectly reduces TACoS — the ACoS target needs to come down.'
+        )
+
+    # S004 — ACoS reduction cadence stalled or insufficient
+    if 'S004' in flags:
+        texts['S004'] = (
+            f'ACoS is {ctx.acos_actual:.0%} vs constraint {ctx.acos_constraint:.0f}%. '
+            f'{ctx.acos_changes_30d} ACoS target change(s) in the last 30 days. '
+            + ('No changes have been made. The gap is not closing.'
+               if ctx.acos_changes_30d == 0
+               else f'Changes are happening but ACoS is still {ctx.acos_gap_to_constraint:.0f}pp above constraint.')
+        )
+
+    # S005 — Portfolio migration in progress
+    if 'S005' in flags:
+        in_port = round(ctx.campaigns_in_portfolio_pct * ctx.total_campaign_count)
+        not_in = ctx.total_campaign_count - in_port
+        texts['S005'] = (
+            f'{in_port} of {ctx.total_campaign_count} campaigns ({ctx.campaigns_in_portfolio_pct:.0%}) are already in portfolios. '
+            f'{not_in} campaign(s) remain outside. Complete the portfolio assignment.'
+        )
+
+    # S006 — ACoS target being loosened
+    if 'S006' in flags:
+        texts['S006'] = (
+            f'ACoS target changed {ctx.acos_changes_30d} time(s) in the last 30 days — direction: increasing. '
+            f'Current target: {ctx.acos_current_target:.0f}%. '
+            f'Spend growth is being driven by loosening efficiency, not by structural improvements.'
+        )
+
+    # S007 — Branded vs non-branded ACoS imbalance
+    if 'S007' in flags:
+        texts['S007'] = (
+            f'Branded spend is {ctx.branded_spend_pct:.0%} of total at {ctx.branded_acos:.0%} ACoS. '
+            f'Non-branded is at {ctx.non_branded_acos:.0%} ACoS vs portal target {ctx.acos_current_target:.0f}%. '
+            f'The target is calibrated to branded performance, leaving non-branded campaigns overspending.'
+        )
+
+    # S008 — OOB with ACoS above constraint — reduce ACoS target
+    if 'S008' in flags:
+        texts['S008'] = (
+            f'Account hit daily budget limits. ACoS target: {ctx.acos_current_target:.0f}% vs constraint {ctx.acos_constraint:.0f}%. '
+            f'Reducing the ACoS target lowers CPC pressure and eases out-of-budget events.'
+        )
+
+    # S009 — Framework compliance gaps
     if 'S009' in flags:
         gap_labels = []
         if ctx.spend_sb == 0: gap_labels.append('no SB campaigns')
@@ -974,53 +1027,20 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
         gaps_str = ', '.join(gap_labels[:5])
         suffix = f' (+{n_gaps - 5} more)' if n_gaps > 5 else ''
         texts['S009'] = (
-            f'{n_gaps} structural framework gaps detected: {gaps_str}{suffix}. '
+            f'{n_gaps} structural framework gap(s) detected: {gaps_str}{suffix}. '
             f'A structured framework review is needed before the next QR.'
         )
 
-    if 'S005' in flags:
-        in_port = round(ctx.campaigns_in_portfolio_pct * ctx.total_campaign_count)
-        not_in_port = ctx.total_campaign_count - in_port
-        texts['S005'] = (
-            f'{in_port} of {ctx.total_campaign_count} campaigns ({ctx.campaigns_in_portfolio_pct:.0%}) are already in portfolios. '
-            f'{not_in_port} campaign(s) remain outside. Complete the portfolio assignment.'
-        )
-
-    if 'S007' in flags:
-        texts['S007'] = (
-            f'Branded spend is {ctx.branded_spend_pct:.0%} of total at {ctx.branded_acos:.0%} ACoS. '
-            f'Non-branded is at {ctx.non_branded_acos:.0%} ACoS vs portal target {ctx.acos_current_target:.0f}%. '
-            f'The target is calibrated to branded performance, leaving non-branded campaigns overspending.'
-        )
-
-    if 'S006' in flags:
-        texts['S006'] = (
-            f'ACoS target increased {ctx.acos_changes_30d} time(s) in the last 30 days. '
-            f'Current target: {ctx.acos_current_target:.0f}%. '
-            f'Spend growth driven by loosening efficiency — not by structural improvements.'
-        )
-
-    if 'S008' in flags:
-        texts['S008'] = (
-            f'Account hit daily budget limits. ACoS target: {ctx.acos_current_target:.0f}% vs constraint {ctx.acos_constraint:.0f}%. '
-            f'Reducing the ACoS target lowers CPC pressure and eases OOB.'
-        )
-
-    if 'S017' in flags:
-        texts['S017'] = (
-            f'The account has {ctx.parent_asin_count} parent ASIN. '
-            f'Multi-ASIN bulk structures add complexity without value at this catalog size.'
-        )
-
+    # S010 — Slow movers with BA spend
     if 'S010' in flags:
-        asin_list_s010 = ', '.join(ctx.slow_mover_asins_with_ba[:5]) if ctx.slow_mover_asins_with_ba else ''
-        suffix_s010 = f' ASINs: {asin_list_s010}.' if asin_list_s010 else ''
+        asin_list = ', '.join(ctx.slow_mover_asins_with_ba[:5]) if ctx.slow_mover_asins_with_ba else ''
+        suffix = f' ASINs: {asin_list}.' if asin_list else ''
         texts['S010'] = (
-            f'{ctx.slow_movers_with_ba} ASIN(s) with fewer than 3 orders in the period have BA spend.{suffix_s010} '
-            f'Slow movers should only appear in WATM — not in BA campaigns. '
-            f'ATM for best sellers, BA for mid sellers, WATM for slow movers.'
+            f'{ctx.slow_movers_with_ba} ASIN(s) with fewer than 3 orders in the period have BA spend.{suffix} '
+            f'Slow movers should be in WATM only — not in BA campaigns.'
         )
 
+    # S011 — Slow movers in BA, no ATM-qualifying ASIN
     if 'S011' in flags:
         texts['S011'] = (
             f'{ctx.slow_movers_with_ba} ASIN(s) with fewer than 3 orders are in BA campaigns and no ATM-qualifying ASIN exists. '
@@ -1028,6 +1048,7 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
             f'WATM is the correct structure for this account — concentrate spend there.'
         )
 
+    # S012 — ATM + BA overlap on high-velocity ASINs (>80 orders, high CPC)
     if 'S012' in flags:
         asin_list = ', '.join(ctx.atm_ba_overlap_asins[:5]) if ctx.atm_ba_overlap_asins else 'see tab 14'
         texts['S012'] = (
@@ -1037,6 +1058,15 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
             f'ATM already covers these high-velocity ASINs — BA spend is redundant and expensive.'
         )
 
+    # S013 — ATM + BA overlap (general)
+    if 'S013' in flags:
+        texts['S013'] = (
+            f'{ctx.atm_ba_overlap_count} ASIN(s) have spend in both ATM and BA campaigns. '
+            f'Overlap can limit bid efficiency and reduce control over spend allocation. '
+            f'Review whether BA campaigns are needed alongside ATM for these ASINs.'
+        )
+
+    # S014 — Bulk campaign structure incomplete
     if 'S014' in flags:
         texts['S014'] = (
             f'BA campaigns are active ({pct(ctx.pct_ba)} of spend / {dollar(ctx.spend_ba)}) '
@@ -1044,38 +1074,71 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
             f'Discovery data is not being converted into manual precision targets.'
         )
 
+    # S017 — Single parent ASIN with multi-ASIN bulk structures
+    if 'S017' in flags:
+        texts['S017'] = (
+            f'The account has {ctx.parent_asin_count} parent ASIN. '
+            f'Multi-ASIN bulk structures add complexity without value at this catalogue size.'
+        )
+
+    # S018 — Branded and non-branded mixed in BA auto layer
     if 'S018' in flags:
         texts['S018'] = (
-            f'CPC moved from ${ctx.cpc_last_year:.2f} last year to ${ctx.cpc_current:.2f} ({ctx.cpc_yoy_change_pct:+.0%}). '
-            f'ACoS thresholds should be revisited to bring costs back under control.'
+            f'Branded spend is {ctx.branded_spend_pct:.0%} and non-branded is {ctx.non_branded_spend_pct:.0%} '
+            f'of total search term spend — both significant inside the same auto campaign layer. '
+            f'Branded and non-branded traffic should be in separate campaigns for independent bid control.'
         )
 
+    # S019 — Auto spend dominant, BAK manual layer too thin
     if 'S019' in flags:
         texts['S019'] = (
-            f'TACoS has been {ctx.tacos_trend} for the last 3 months (+{ctx.tacos_trend_pp:.1f}pp). '
-            f'Current TACoS: {ctx.tacos_actual:.0%} vs constraint {ctx.tacos_constraint:.0f}%. '
-            f'Profitability is eroding — strategic action needed before the constraint is breached.'
+            f'Auto campaigns (BA + ATM + WATM) account for {ctx.auto_spend_pct:.0%} of total spend. '
+            f'BAK (manual exact) is only {ctx.manual_exact_pct:.0%}. '
+            f'Discovery is generating learnings that are not being converted into precision manual campaigns.'
         )
 
+    # S020 — OOB with ACoS or TACoS above constraint
     if 'S020' in flags:
         texts['S020'] = (
             f'Account ran out of budget at least once. Total spend: {dollar(ctx.total_spend)}. '
+            f'ACoS: {ctx.acos_actual:.0%} vs constraint {ctx.acos_constraint:.0f}%. '
             f'Budget expansion or scope reduction should be reviewed with the client.'
         )
 
+    # S021 — TACoS increasing trend approaching constraint
     if 'S021' in flags:
         texts['S021'] = (
-            f'No TACoS constraint documented for this account. '
-            f'Without a TACoS target, profitability tracking has no reference point. '
-            f'Agree a TACoS goal with the client and document it in Client Success.'
+            f'TACoS has been {ctx.tacos_trend} for the last 3 months ({ctx.tacos_trend_pp:+.1f}pp). '
+            f'Current TACoS: {ctx.tacos_actual:.0%}. '
+            f'Profitability is eroding — review ACoS target strategy to slow the TACoS increase.'
         )
 
+    # S022 — Catalogue activation scope too low
+    if 'S022' in flags:
+        spend_cov = (ctx.spending_asin_count / ctx.catalog_asin_count) if ctx.catalog_asin_count > 0 else 0
+        texts['S022'] = (
+            f'{ctx.spending_asin_count} of {ctx.catalog_asin_count} catalogue ASINs ({spend_cov:.0%}) have active spend. '
+            f'A large portion of the catalogue has no advertising coverage. '
+            f'Review whether key ASINs are missing from campaign structures.'
+        )
+
+    # S023 — OOB with budget/scope concern
     if 'S023' in flags:
         texts['S023'] = (
             f'Account hit OOB. Spend: {dollar(ctx.total_spend)}. '
             f'Budget should be expanded, or product scope reduced to concentrate on top ASINs.'
         )
 
+    # S025 — TACoS rising while ACoS improving (divergence)
+    if 'S025' in flags:
+        texts['S025'] = (
+            f'ACoS is trending {ctx.acos_direction} while TACoS has risen '
+            f'{ctx.tacos_trend_pp:+.1f}pp over the last 3 months. '
+            f'When ACoS improves but TACoS rises, organic sales are likely declining '
+            f'or promotional activity is distorting the total sales denominator.'
+        )
+
+    # S029 — Non-Quartile or imported spend above threshold
     if 'S029' in flags:
         non_qt = ctx.pct_imported + ctx.pct_non_quartile
         texts['S029'] = (
@@ -1084,6 +1147,7 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
             f'The account is not fully operating within the Quartile framework.'
         )
 
+    # S030 — SPT campaign ACoS above constraint
     if 'S030' in flags:
         texts['S030'] = (
             f'SPT is active ({dollar(ctx.spend_spt)}, {pct(ctx.pct_spt)} of spend). '
@@ -1091,15 +1155,17 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
             f'Defensive structure should be split by category or brand segment.'
         )
 
+    # S031 — SPT covering Tier 100 slow-mover ASINs
     if 'S031' in flags:
-        asin_list_s031 = ', '.join(ctx.tier100_with_spt_asins[:5]) if ctx.tier100_with_spt_asins else ''
-        suffix_s031 = f' ASINs: {asin_list_s031}.' if asin_list_s031 else ''
+        asin_list = ', '.join(ctx.tier100_with_spt_asins[:5]) if ctx.tier100_with_spt_asins else ''
+        suffix = f' ASINs: {asin_list}.' if asin_list else ''
         texts['S031'] = (
             f'{len(ctx.tier100_with_spt_asins)} Tier 100 ASIN(s) have SPT spend. '
-            f'SPT spend: {dollar(ctx.spend_spt)}.{suffix_s031} '
+            f'SPT spend: {dollar(ctx.spend_spt)}.{suffix} '
             f'Tier 100 ASINs are slow movers and should not be in SPT campaigns.'
         )
 
+    # S032 — ATM underweighted (< 3% of spend)
     if 'S032' in flags:
         texts['S032'] = (
             f'ATM campaigns represent {pct(ctx.pct_atm)} of spend ({dollar(ctx.spend_atm)}). '
@@ -1107,21 +1173,48 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
             + f'Automatic targeting on best-selling ASINs should be expanded.'
         )
 
+    # S034 — SD_AUDI investment outperforming
+    if 'S034' in flags:
+        texts['S034'] = (
+            f'SD_AUDI campaigns avg ACoS: {pct(ctx.sd_audi_avg_acos)} vs account avg {pct(ctx.acos_actual)}. '
+            f'SD audience campaigns are outperforming — consider expanding SD_AUDI coverage.'
+        )
+
+    # S035 — Top-seller ASINs missing key campaign types
+    if 'S035' in flags:
+        texts['S035'] = (
+            f'{ctx.top_seller_type_gaps} of {ctx.tier1_asin_count} top-selling ASIN(s) (Tier 10–30) '
+            f'are missing ≥2 key campaign types (ATM, BAK, OP). '
+            f'Best-seller campaigns have likely been paused or were never fully deployed.'
+        )
+
+    # S037 — BA covering slow-mover ASINs
     if 'S037' in flags:
-        asin_list_s037 = ', '.join(ctx.slow_mover_asins_with_ba[:5]) if ctx.slow_mover_asins_with_ba else ''
-        suffix_s037 = f' ASINs with <3 orders in BA: {asin_list_s037}.' if asin_list_s037 else ''
+        asin_list = ', '.join(ctx.slow_mover_asins_with_ba[:5]) if ctx.slow_mover_asins_with_ba else ''
+        suffix = f' ASINs with <3 orders in BA: {asin_list}.' if asin_list else ''
         texts['S037'] = (
             f'BA campaigns: {dollar(ctx.spend_ba)} ({pct(ctx.pct_ba)} of spend). '
-            f'{ctx.slow_movers_with_ba} ASIN(s) with fewer than 3 orders in the period have BA spend.{suffix_s037} '
+            f'{ctx.slow_movers_with_ba} ASIN(s) with fewer than 3 orders in the period have BA spend.{suffix} '
             f'Remove slow movers from BA and redirect spend to best sellers.'
         )
 
+    # S038 — BAK harvest layer missing while BA > 30% of spend
+    if 'S038' in flags:
+        texts['S038'] = (
+            f'BA campaigns account for {pct(ctx.pct_ba)} of total spend ({dollar(ctx.spend_ba)}). '
+            f'No BAK harvest layer exists. '
+            f'Discovery data from BA is not being converted into manual exact match campaigns. '
+            f'Launch BAK campaigns to capture proven search terms from BA.'
+        )
+
+    # S039 — BA not segmented by category (< 2 campaigns)
     if 'S039' in flags:
         texts['S039'] = (
             f'Only {ctx.ba_campaign_count} BA campaign(s) detected. '
-            f'Structure is not segmented by category — new BA campaigns by category needed.'
+            f'Structure is not segmented by category — new BA campaigns by category are needed.'
         )
 
+    # S041 — Low-order campaign consolidation needed
     if 'S041' in flags:
         severity = 'severe fragmentation' if ctx.low_order_campaign_count > 80 else 'high fragmentation'
         texts['S041'] = (
@@ -1130,11 +1223,26 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
             f'Remove or archive campaigns with persistent low volume.'
         )
 
+    # S042 — SB outperforming by >20%
+    if 'S042' in flags:
+        texts['S042'] = (
+            f'SB campaigns avg ACoS: {pct(ctx.sb_avg_acos)} vs account avg {pct(ctx.acos_actual)}. '
+            f'Sponsored Brands is outperforming — consider increasing SB investment or adding new campaigns.'
+        )
+
+    # S043 — SBV outperforming by >20%
+    if 'S043' in flags:
+        texts['S043'] = (
+            f'SBV campaigns avg ACoS: {pct(ctx.sbv_avg_acos)} vs account avg {pct(ctx.acos_actual)}. '
+            f'Sponsored Brands Video is outperforming — consider expanding SBV category targets.'
+        )
+
+    # S045 — SB missing, base is built
     if 'S045' in flags:
-        acos_pp  = ctx.acos_actual * 100
+        acos_pp = ctx.acos_actual * 100
         declining = ctx.yoy_ad_sales < -0.05
         acos_high = ctx.acos_constraint > 0 and acos_pp > ctx.acos_constraint * 1.2
-        prefix = f'No Sponsored Brands spend detected. '
+        prefix = 'No Sponsored Brands spend detected. '
         prefix += f'SBV is active ({dollar(ctx.spend_sbv)}) but SB is absent. ' if ctx.spend_sbv > 0 else ''
         if declining:
             suffix = f'Ad sales down {pct(abs(ctx.yoy_ad_sales))} YoY — SB is a direct lever for upper-funnel recovery.'
@@ -1144,37 +1252,67 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
             suffix = 'SB campaigns should be launched to build upper-funnel coverage.'
         texts['S045'] = prefix + suffix
 
+    # S047 — Import kickoff needed
     if 'S047' in flags:
         texts['S047'] = (
             f'Imported campaigns: {dollar(ctx.spend_imported)} ({pct(ctx.pct_imported)} of spend). '
             f'These run outside the Quartile system. An import kickoff CoE ticket is needed.'
         )
 
-    if 'S034' in flags:
-        texts['S034'] = (
-            f'SD_AUDI campaigns avg ACoS: {pct(ctx.sd_audi_avg_acos)} vs account avg {pct(ctx.acos_actual)}. '
-            f'SD audience campaigns are outperforming — consider expanding SD_AUDI coverage.'
+    # S048 — BAK harvest stalled (BAK < 10% of BA spend)
+    if 'S048' in flags:
+        texts['S048'] = (
+            f'BAK spend is {pct(ctx.pct_bak)} vs BA spend at {pct(ctx.pct_ba)}. '
+            f'BAK exists but is receiving less than 10% of its BA feeder spend. '
+            f'The harvest cycle has stalled — review BA search term report and promote converting terms to BAK.'
         )
 
-    if 'S035' in flags:
-        texts['S035'] = (
-            f'{ctx.top_seller_type_gaps} of {ctx.tier1_asin_count} top-selling ASIN(s) (Tier 10–30) '
-            f'are missing ≥2 key campaign types (ATM, BAK, OP). '
-            f'Best-seller campaigns have likely been paused or were never fully deployed.'
+    # S049 — Own product page undefended (BAK exists, no OP)
+    if 'S049' in flags:
+        texts['S049'] = (
+            f'BAK represents {pct(ctx.pct_bak)} of total spend ({dollar(ctx.spend_bak)}) '
+            f'but no OP (own product targeting) campaigns are active. '
+            f'Own product pages are undefended — competitors can place ads on your listings.'
         )
 
-    if 'S042' in flags:
-        texts['S042'] = (
-            f'SB campaigns avg ACoS: {pct(ctx.sb_avg_acos)} vs account avg {pct(ctx.acos_actual)}. '
-            f'Sponsored Brands is outperforming — consider increasing SB investment or adding new SB campaigns.'
+    # S050 — BR discovery layer missing (BAK exists, no BR feeder)
+    if 'S050' in flags:
+        texts['S050'] = (
+            f'No BR (broad match research) campaigns detected. '
+            f'BAK has {pct(ctx.pct_bak)} of spend but no broad match discovery feeder. '
+            f'The keyword harvest is static — no new terms are being tested.'
         )
 
-    if 'S043' in flags:
-        texts['S043'] = (
-            f'SBV campaigns avg ACoS: {pct(ctx.sbv_avg_acos)} vs account avg {pct(ctx.acos_actual)}. '
-            f'Sponsored Brands Video is outperforming — consider expanding SBV category targets.'
+    # S053 — Inefficient BAK campaigns
+    if 'S053' in flags:
+        texts['S053'] = (
+            f'{ctx.inefficient_bak_count} BAK campaign(s) have spend >$200, ACoS >{ctx.acos_constraint * 1.5:.0f}%, '
+            f'and fewer than 5 orders in the period. '
+            f'Keyword focus should be narrowed — consolidate to the top-performing terms and pause low-conversion keywords.'
         )
 
+    # S054 — ATM outperforming by >20%
+    if 'S054' in flags:
+        texts['S054'] = (
+            f'ATM (automatic targeting) campaigns avg ACoS: {pct(ctx.atm_avg_acos)} vs account avg {pct(ctx.acos_actual)}. '
+            f'Automatic targeting is outperforming — consider expanding ATM coverage across more ASINs.'
+        )
+
+    # S055 — BR campaigns outperforming by >20%
+    if 'S055' in flags:
+        texts['S055'] = (
+            f'BR (broad match) campaigns avg ACoS: {pct(ctx.br_avg_acos)} vs account avg {pct(ctx.acos_actual)}. '
+            f'Broad match targeting is outperforming — consider expanding BR coverage or launching new BR campaigns.'
+        )
+
+    # S056 — PH_ (phrase match) campaigns outperforming by >20%
+    if 'S056' in flags:
+        texts['S056'] = (
+            f'PH (phrase match) campaigns avg ACoS: {pct(ctx.ph_avg_acos)} vs account avg {pct(ctx.acos_actual)}. '
+            f'Phrase match targeting is outperforming — consider expanding PH coverage or launching new PH campaigns.'
+        )
+
+    # S057 — Keyword strategy too broad (BR >15% at poor efficiency)
     if 'S057' in flags:
         texts['S057'] = (
             f'BR broad match campaigns represent {pct(ctx.pct_br)} of total spend '
@@ -1183,32 +1321,57 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
             f'Narrow keyword targeting to proven high-intent terms and reduce broad match coverage.'
         )
 
+    # S058 — OP campaigns outperforming account average by >20%
     if 'S058' in flags:
         texts['S058'] = (
-            f'OP_ (product targeting) avg ACoS: {pct(ctx.op_avg_acos)} vs account avg {pct(ctx.acos_actual)}. '
-            f'Product-targeting campaigns are outperforming — consider expanding OP_ coverage.'
+            f'OP (product targeting) campaigns avg ACoS: {pct(ctx.op_avg_acos)} vs account avg {pct(ctx.acos_actual)}. '
+            f'Product-targeting campaigns are outperforming — consider expanding OP coverage.'
         )
 
-    if 'S053' in flags:
-        texts['S053'] = (
-            f'{ctx.inefficient_bak_count} BAK campaign(s) have spend >$200, ACoS >{ctx.acos_constraint * 1.5:.0f}%, '
-            f'and fewer than 5 orders in the period. '
-            f'Keyword focus should be narrowed — consolidate to the top-performing terms and pause low-conversion keywords.'
+    # S060 — SD_FLEX campaigns outperforming account average by >20%
+    if 'S060' in flags:
+        texts['S060'] = (
+            f'SD_FLEX campaigns avg ACoS: {pct(ctx.sd_flex_avg_acos)} vs account avg {pct(ctx.acos_actual)}. '
+            f'SD_FLEX remarketing is outperforming — consider expanding SD_FLEX audience coverage.'
         )
 
+    # S062 — No CAT_SP, OP outperforming or no OP at all
+    if 'S062' in flags:
+        op_note = ''
+        if ctx.op_avg_acos > 0 and ctx.acos_actual > 0:
+            op_note = (
+                f'OP campaigns avg ACoS: {ctx.op_avg_acos:.0%} vs account avg {ctx.acos_actual:.0%} '
+                f'({(1 - ctx.op_avg_acos / ctx.acos_actual):.0%} more efficient). '
+            )
+        texts['S062'] = (
+            f'No CAT_SP campaigns detected. {op_note}'
+            f'Category-targeted SP campaigns should be launched for key product categories.'
+        )
+
+    # S063 — OP campaigns outperforming keyword campaigns
+    if 'S063' in flags:
+        texts['S063'] = (
+            f'OP (product targeting) campaigns avg ACoS: {pct(ctx.op_avg_acos)} vs account avg {pct(ctx.acos_actual)}. '
+            f'Product-targeting is outperforming keyword campaigns. '
+            f'Expand OP coverage and consider launching SD_PRD to strengthen product-page presence.'
+        )
+
+    # S064 — Paused SB campaigns with historical spend
     if 'S064' in flags:
         texts['S064'] = (
             f'{ctx.paused_sb_count} SB campaign(s) are paused with historical spend. '
             f'Current SB spend: {dollar(ctx.spend_sb)}. '
-            f'Paused SB campaigns should be reviewed and rebuilt with updated branded keyword structures.'
+            f'Paused SB campaigns should be reviewed and rebuilt with updated keyword structures.'
         )
 
+    # S065 — SD_FLEX campaigns outperforming by >20%
     if 'S065' in flags:
         texts['S065'] = (
             f'SD_FLEX campaigns avg ACoS: {pct(ctx.sd_flex_avg_acos)} vs account avg {pct(ctx.acos_actual)}. '
-            f'SD_FLEX campaigns are outperforming — consider expanding SD_FLEX coverage.'
+            f'SD_FLEX remarketing is outperforming — consider expanding SD_FLEX coverage with new audiences.'
         )
 
+    # S066 — Paused SBV campaigns with historical spend
     if 'S066' in flags:
         texts['S066'] = (
             f'{ctx.paused_sbv_count} SBV campaign(s) are paused with historical spend. '
@@ -1216,193 +1379,224 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
             f'SBV should run alongside SB to capture video inventory — evaluate reactivation.'
         )
 
-    if 'S060' in flags:
-        texts['S060'] = (
-            f'SD_FLEX campaigns avg ACoS: {pct(ctx.sd_flex_avg_acos)} vs account avg {pct(ctx.acos_actual)}. '
-            f'SD_FLEX campaigns are outperforming — consider expanding SD_FLEX coverage.'
-        )
-
+    # S067 — CAT_SP launch opportunity (no CAT_SP, OP works or no OP)
     if 'S067' in flags:
-        kw_total = ctx.br_campaign_count + ctx.ow_campaign_count + ctx.ph_campaign_count
         texts['S067'] = (
-            f'{ctx.op_campaign_count} OP (product target) campaigns vs {kw_total} keyword campaigns (OW+BR+PH). '
-            f'Product-targeting is under-developed relative to keyword volume. '
-            f'Consider expanding OP_ campaigns for the top ASINs.'
+            f'No CAT_SP campaigns detected. Total spend: {dollar(ctx.total_spend)}. '
+            + (f'OP campaigns avg ACoS: {pct(ctx.op_avg_acos)} vs account avg {pct(ctx.acos_actual)} — '
+               f'product targeting is working. ' if ctx.op_avg_acos > 0 else '')
+            + f'Launch CAT_SP campaigns for categories with ≥30 ASINs and ≥5% of sales.'
         )
 
+    # S068 — SBV product targeting launch (SBV missing, SB well established)
     if 'S068' in flags:
         texts['S068'] = (
-            f'CatchAll campaigns generated {ctx.catchall_orders:.0f} orders in the period. '
-            f'High CatchAll volume — review converting search terms and graduate them to BAK campaigns.'
+            f'No SBV (Sponsored Brands Video) campaigns detected. '
+            f'SB is active ({dollar(ctx.spend_sb)}, {pct(ctx.pct_sb)} of spend). '
+            f'SBV product targeting is the natural next step when SB is established. '
+            f'Launch SBV campaigns on the same category targets as existing SB.'
         )
 
+    # S069 — Broad Match Graduation Signal: BR outperforms OW
     if 'S069' in flags:
         texts['S069'] = (
-            f'CAT_SP campaigns avg ACoS: {pct(ctx.catsp_avg_acos)} vs constraint {constraint:.0f}%. '
-            f'CAT_SP is above target — review targeting scope and remove underperforming categories.'
+            f'BR (broad match) campaigns avg ACoS: {pct(ctx.br_avg_acos)} — '
+            f'outperforming OW (exact match) at {pct(ctx.ow_avg_acos)}. '
+            f'{ctx.br_campaign_count} BR campaigns vs {ctx.ow_campaign_count} OW campaigns. '
+            f'Broad match is proving more efficient — graduate proven BR learnings into phrase match (PH_) campaigns.'
         )
 
-    if 'S062' in flags:
-        op_note = ''
-        if ctx.op_avg_acos > 0 and ctx.acos_actual > 0:
-            op_note = (
-                f'OP campaigns avg ACoS: {ctx.op_avg_acos:.0%} vs account avg {ctx.acos_actual:.0%} '
-                f'({(1 - ctx.op_avg_acos / ctx.acos_actual):.0%} better). '
-            )
-        texts['S062'] = (
-            f'No CAT_SP campaigns detected. {op_note}'
-            f'Category-targeted SP campaigns should be launched for key product categories.'
-        )
-
-    if 'S063' in flags:
-        prefix = 'No SBV campaigns detected. '
-        if ctx.spend_sb > 0:
-            prefix += f'SB is active ({ctx.sb_impressions:,} impressions) — SBV is the natural next deploy. '
-        texts['S063'] = prefix + 'Launch SBV product-targeting campaigns.'
-
+    # S071 — Exact Match Graduation Signal: OW outperforms BR
     if 'S071' in flags:
         texts['S071'] = (
-            f'{ctx.watm_campaign_count} WATM campaigns active. '
-            f'Multiple WATM campaigns add fragmentation without structural benefit.'
+            f'OW (exact match) campaigns avg ACoS: {pct(ctx.ow_avg_acos)} — '
+            f'outperforming BR (broad match) at {pct(ctx.br_avg_acos)}. '
+            f'{ctx.ow_campaign_count} OW campaigns vs {ctx.br_campaign_count} BR campaigns. '
+            f'Exact match is more efficient — graduate proven BR learnings into OW exact match campaigns.'
         )
 
-    if 'S076' in flags:
-        missing = []
-        if ctx.watm_campaign_count == 0:
-            missing.append('no WATM campaign')
-        if not ctx.has_catchall:
-            missing.append('no CatchAll campaign')
-        texts['S076'] = (
-            f'Full catalogue coverage gap: {" and ".join(missing)}. '
-            f'The account needs at least one active WATM and one active CatchAll campaign '
-            f'to ensure complete catalogue coverage.'
+    # S072 — OP target expansion: many keyword campaigns, few OP
+    if 'S072' in flags:
+        kw_total = ctx.br_campaign_count + ctx.ow_campaign_count + ctx.ph_campaign_count
+        texts['S072'] = (
+            f'{ctx.op_campaign_count} OP (product target) campaign(s) vs {kw_total} keyword campaigns (OW + BR + PH). '
+            f'Product-targeting coverage is thin relative to keyword volume. '
+            f'Expand OP_ campaigns using top ASINs as targets — product-page coverage is underdeveloped.'
         )
 
-    if 'S078' in flags:
-        over_threshold = [
-            b for b in ctx.bak_campaigns
-            if b['pct_of_total'] > 0.15 and b['acos'] > (ctx.acos_constraint / 100) * 0.50
-        ]
-        camp_lines = '; '.join(
-            f"{b['name']} ({pct(b['pct_of_total'])} of spend, {b['acos']:.0%} ACoS)"
-            for b in over_threshold[:3]
-        )
-        texts['S078'] = (
-            f'{len(over_threshold)} BAK campaign(s) exceed 15% of total spend with ACoS above constraint threshold. '
-            + (f'Campaigns: {camp_lines}. ' if camp_lines else '')
-            + f'Review top BAK terms and add negatives for wasteful keywords.'
+    # S073 — CatchAll keyword graduation (high orders in CatchAll, BAK thin)
+    if 'S073' in flags:
+        texts['S073'] = (
+            f'CatchAll campaigns generated {ctx.catchall_orders:.0f} orders in the period. '
+            f'BAK (manual exact) is only {pct(ctx.pct_bak)} of total spend. '
+            f'High-converting search terms in CatchAll should be graduated to BAK campaigns for better bid control.'
         )
 
+    # S074 — CatchAll graduation overdue (at scale, BAK still thin)
+    if 'S074' in flags:
+        texts['S074'] = (
+            f'CatchAll campaigns have {ctx.catchall_orders:.0f} orders but BAK is only '
+            f'{pct(ctx.pct_bak)} of total spend. '
+            f'High-converting search terms should be graduated to BAK campaigns '
+            f'for tighter bid control and better efficiency.'
+        )
+
+    # S075 — CAT_SP avg ACoS above constraint
+    if 'S075' in flags:
+        texts['S075'] = (
+            f'CAT_SP campaigns avg ACoS: {pct(ctx.catsp_avg_acos)} vs constraint {constraint:.0f}%. '
+            f'Category-targeted SP campaigns are above the ACoS threshold. '
+            f'Review targeting scope and remove underperforming category nodes.'
+        )
+
+    # S077 — Multiple WATM campaigns without structural need
+    if 'S077' in flags:
+        texts['S077'] = (
+            f'{ctx.watm_campaign_count} WATM campaigns are active. '
+            f'WATM spend: {pct(ctx.pct_watm)} of total ({dollar(ctx.spend_watm)}). '
+            f'Multiple WATM campaigns add fragmentation. '
+            f'One WATM per account is standard unless portfolio-level separation is intentional.'
+        )
+
+    # S080 — CAT_SP active but no qualifying categories
+    if 'S080' in flags:
+        texts['S080'] = (
+            f'CAT_SP campaigns are active but no product category qualifies under the CoE threshold '
+            f'(AsinCount ≥ 30 AND category share ≥ 5% of sales). '
+            f'CAT_SP may be targeting categories that are too narrow or not contributing meaningfully to sales.'
+        )
+
+    # S081 — BAK branded and non-branded mixed
+    if 'S081' in flags:
+        texts['S081'] = (
+            f'Branded search terms represent {ctx.branded_spend_pct:.0%} of spend and '
+            f'non-branded {ctx.non_branded_spend_pct:.0%} — both significant. '
+            f'These are likely in the same BAK bucket. '
+            f'Branded and non-branded terms require separate bid strategies and should be in separate campaigns.'
+        )
+
+    # S082 — WATM / CatchAll catalogue coverage below 60%
     if 'S082' in flags:
+        spend_cov = (ctx.spending_asin_count / ctx.catalog_asin_count) if ctx.catalog_asin_count > 0 else 0
         texts['S082'] = (
-            f'No Sponsored Display campaigns active. SD spend $0, impressions: {ctx.sd_impressions:,}. '
-            f'Product-view remarketing and audience retargeting are not running.'
+            f'WATM or CatchAll is active but only {spend_cov:.0%} of the catalogue '
+            f'({ctx.spending_asin_count} of {ctx.catalog_asin_count} ASINs) has ad spend. '
+            f'Coverage is below 60%. Some ASINs are missing from current campaign structures.'
         )
 
+    # S083 — WATM and CatchAll both active simultaneously (redundant)
     if 'S083' in flags:
         texts['S083'] = (
-            f'No ATC retargeting campaigns detected. '
-            f'ProSuite is active — SD_FLEX_ATC should be deployed for add-to-cart audiences.'
+            f'{ctx.watm_campaign_count} WATM campaign(s) and at least 1 CatchAll campaign are both active. '
+            f'WATM and CatchAll serve the same coverage purpose. '
+            f'Running both creates redundant overlap — review which structure is preferred and deactivate the other.'
         )
 
+    # S084 — WATM spend underweighted (< 3% of total)
     if 'S084' in flags:
         texts['S084'] = (
-            f'SD is active ({dollar(ctx.spend_sd)}) but no SD_PRD product-page campaigns detected. '
-            f'Product-page defensive coverage via SD_PRD is missing.'
+            f'WATM campaigns exist ({ctx.watm_campaign_count} active) but represent only {pct(ctx.pct_watm)} of total spend. '
+            f'WATM is not receiving enough budget to serve its coverage purpose. '
+            f'Review WATM budgets and bid levels.'
         )
 
-    if 'S086' in flags:
-        texts['S086'] = (
-            f'{ctx.portfolio_count} portfolios exist. '
-            f'{ctx.managed_portfolio_count} managed. '
-            f'{ctx.portfolios_with_budget_cap} have budget caps. '
-            f'Portfolio governance needs to be tightened.'
+    # S085 — BAK high-spend with ACoS above constraint
+    if 'S085' in flags:
+        over = [b for b in ctx.bak_campaigns if b['pct_of_total'] > 0.15 and b['acos'] > (constraint / 100) * 0.50]
+        camp_lines = '; '.join(
+            f"{b['name']} ({pct(b['pct_of_total'])}, {b['acos']:.0%} ACoS)"
+            for b in over[:3]
+        )
+        texts['S085'] = (
+            f'{len(over)} BAK campaign(s) exceed 15% of total spend with ACoS above the constraint threshold. '
+            + (f'Campaigns: {camp_lines}. ' if camp_lines else '')
+            + f'Add negatives for wasteful keywords and review top spend terms.'
         )
 
-    if 'S087' in flags:
-        non_qt = ctx.pct_imported + ctx.pct_non_quartile
-        texts['S087'] = (
-            f'{pct(non_qt)} of spend is in unmanaged campaigns. '
-            f'More than half of spend is outside the Quartile system.'
-        )
-
+    # S088 — No SD, account is ready for remarketing
     if 'S088' in flags:
         texts['S088'] = (
-            f'Campaign-level ACoS overrides are active. '
-            f'With ACoS already above constraint, these overrides may be conflicting with system logic.'
+            f'No Sponsored Display campaigns active. SD spend: $0. Total spend: {dollar(ctx.total_spend)}. '
+            f'The account has sufficient scale ({ctx.max_asin_orders_30d:.0f} orders on top ASIN) for SD retargeting. '
+            f'Product-view and ATC remarketing should be launched.'
         )
 
+    # S089 — ProSuite active, no ATC retargeting deployed
     if 'S089' in flags:
         texts['S089'] = (
-            f'Product-level ACoS overrides are active. '
-            f'With ACoS above constraint, per-ASIN overrides add inconsistency.'
+            f'SD is active ({pct(ctx.pct_sd)} of spend) and ProSuite audiences are available. '
+            f'No ATC (add-to-cart) retargeting campaigns detected. '
+            f'SD_FLEX_ATC should be deployed to retarget high-intent shoppers who added to cart but did not purchase.'
         )
 
-    if 'S090' in flags:
-        texts['S090'] = (
-            f'VCPM campaigns represent {pct(ctx.vcpm_spend_pct)} of SD spend. '
-            f'Above the 10% threshold — impression-based buying is over-weighted. '
-            f'Review Buy Box ownership before increasing VCPM investment.'
-        )
-
+    # S092 — OW own-page coverage missing
     if 'S092' in flags:
         texts['S092'] = (
-            f'OP product-targeting campaigns are active ({dollar(ctx.pct_op * ctx.total_spend):.0f} est.) '
-            f'but no OW own-waterfall auto campaigns found. '
+            f'OP product-targeting campaigns are active but no OW own-waterfall auto campaigns found. '
             f'Own listing pages have OP coverage but no auto-targeting restricted to own pages.'
         )
 
+    # S093 — SD suggested but PDP maturity too low
     if 'S093' in flags:
         texts['S093'] = (
             f'SD expansion signal is present but top-selling ASIN has only '
             f'{ctx.max_asin_orders_30d:.0f} orders in the period. '
-            f'Retargeting audience pool is too small to be effective. '
-            f'Wait until top ASIN reaches ≥50 orders/month before launching SD.'
+            f'SD retargeting audiences require sufficient product-view traffic to be effective. '
+            f'Consider waiting until top ASINs reach ≥50 orders/month before launching SD.'
         )
 
+    # S094 — Portfolio governance: no managed portfolios or budget caps
     if 'S094' in flags:
         texts['S094'] = (
             f'{ctx.portfolio_count} portfolios active. '
-            f'No portfolios have a budget cap and management is inactive. '
-            f'Portfolio governance should be reviewed and budget caps applied.'
+            f'{ctx.managed_portfolio_count} managed. '
+            f'{ctx.portfolios_with_budget_cap} have budget caps. '
+            f'Portfolio governance needs to be tightened — apply budget caps and enable management.'
         )
 
+    # S095 — Campaign-level ACoS overrides active while above constraint
     if 'S095' in flags:
         texts['S095'] = (
             f'Campaign-level ACoS overrides are active while ACoS is above constraint ({ctx.acos_actual:.0%} vs {ctx.acos_constraint:.0f}%). '
             f'Each override should be intentional and documented — review for stale or unintended overrides.'
         )
 
+    # S096 — Product-level ACoS overrides active while above constraint
     if 'S096' in flags:
         texts['S096'] = (
             f'Product-level ACoS overrides are active while account ACoS is above constraint. '
             f'Review product overrides and confirm each is intentional.'
         )
 
+    # S097 — VCPM overuse on products without Buy Box
     if 'S097' in flags:
         texts['S097'] = (
             f'VCPM spend represents {pct(ctx.vcpm_spend_pct)} of total SD spend. '
             f'VCPM on products without consistent Buy Box ownership wastes impressions.'
         )
 
+    # S098 — Tagging and segmentation gap (BA+SPT+ATM, no OP)
     if 'S098' in flags:
         texts['S098'] = (
             f'BA ({dollar(ctx.spend_ba)}), SPT ({dollar(ctx.spend_spt)}), ATM ({dollar(ctx.spend_atm)}) all active '
             f'but no OP product-target campaigns detected. Product-page coverage is missing.'
         )
 
+    # S100 — SBV naming convention not followed
     if 'S100' in flags:
         texts['S100'] = (
             f'SBV campaigns active but not all follow the SBV_ naming convention. '
-            f'Non-standard naming reduces governance clarity.'
+            f'Non-standard naming reduces governance clarity and reporting consistency.'
         )
 
+    # S101 — Campaigns outside portfolio
     if 'S101' in flags:
         texts['S101'] = (
             f'{ctx.campaigns_not_in_portfolio} campaign(s) not assigned to any portfolio. '
-            f'All active campaigns should be assigned consistently.'
+            f'All active campaigns should be assigned to a portfolio for governance and reporting.'
         )
 
+    # S102 — Best-seller visibility gaps
     if 'S102' in flags:
         texts['S102'] = (
             f'{ctx.top_seller_type_gaps} of {ctx.tier1_asin_count} top-selling ASIN(s) (Tier 10–30) '
@@ -1410,12 +1604,31 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
             f'Best-seller visibility is incomplete — launch missing campaign types for these ASINs.'
         )
 
+    # S104 — SB active but SBV missing (historical / manual flag)
     if 'S104' in flags:
         texts['S104'] = (
             f'SB active ({ctx.sb_impressions:,} impressions) but SBV spend is $0. '
             f'Launch SBV product-targeting and branded campaigns.'
         )
 
+    # S105 — Proven targets (top 30 search terms) not utilised in BAK
+    if 'S105' in flags:
+        texts['S105'] = (
+            f'{ctx.unconverted_top_terms} high-converting search term(s) in the top 30 '
+            f'(≥3 orders, ≥10% CVR) are not captured in BAK campaigns. '
+            f'BAK is only {pct(ctx.pct_bak)} of total spend. '
+            f'These proven terms should be promoted to exact match BAK campaigns.'
+        )
+
+    # S106 — ProSuite AMC audiences not deployed
+    if 'S106' in flags:
+        texts['S106'] = (
+            f'{ctx.total_campaign_count} campaigns active but no ProSuite AMC audiences applied. '
+            f'The account has sufficient scale for audience-based targeting. '
+            f'Test Amazon native audiences (NTB, ATC, SNS) via ProSuite AMC.'
+        )
+
+    # S107 — Inefficient ASIN spend (high spend, high ACoS, low orders)
     if 'S107' in flags:
         texts['S107'] = (
             f'{ctx.inefficient_asin_count} ASIN(s) with spend >$100, '
@@ -1423,19 +1636,25 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
             f'Spend on these ASINs is not converting — reduce or reallocate to top performers.'
         )
 
+    # S108 — SB active but SBV missing (gated: SB well established, > 5% of spend)
     if 'S108' in flags:
         texts['S108'] = (
-            f'SB active ({ctx.sb_impressions:,} impressions) but SBV spend is $0. '
-            f'SBV is the natural next step — launch video campaigns on the same category targets as SB.'
+            f'SB is active ({ctx.sb_impressions:,} impressions, {pct(ctx.pct_sb)} of spend) '
+            f'but SBV spend is $0. '
+            f'SBV is the natural next step when SB is established — launch video campaigns '
+            f'on the same category targets as existing SB.'
         )
 
+    # S111 — No recurring sales strategy, sales flat or declining
     if 'S111' in flags:
+        yoy_note = f'Ad sales declined {abs(ctx.yoy_ad_sales):.0%} YoY. ' if ctx.yoy_ad_sales < 0 else 'Ad sales are flat YoY. '
         texts['S111'] = (
-            f'Ad sales declined {abs(ctx.yoy_ad_sales):.0%} YoY. '
-            f'No recurring sales strategy (SnS) is active. '
-            f'For repurchasable products, a recurring purchase strategy should be reviewed with the client.'
+            yoy_note
+            + f'No recurring sales strategy (SnS) is active. '
+            + f'For repurchasable products, a recurring purchase strategy should be reviewed with the client.'
         )
 
+    # S112 — Sales declining while spend is growing
     if 'S112' in flags:
         texts['S112'] = (
             f'Ad sales declined {abs(ctx.yoy_ad_sales):.0%} YoY while spend increased {ctx.mom_spend_change:.0%} MoM. '
@@ -1443,6 +1662,7 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
             f'Budget levels and campaign scope must be reviewed before the next cycle.'
         )
 
+    # S113 — Budget constraint alignment deviation
     if 'S113' in flags:
         if ctx.monthly_budget > 0:
             deviation = abs(ctx.total_spend - ctx.monthly_budget) / ctx.monthly_budget
@@ -1457,6 +1677,7 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
                 f'Budget constraint alignment cannot be validated automatically.'
             )
 
+    # S117 — Subscribe & Save not active
     if 'S117' in flags:
         texts['S117'] = (
             f'Subscribe & Save is not active. '
@@ -1464,6 +1685,7 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
             + f'For repurchasable products, SnS should be evaluated as a retention and growth lever.'
         )
 
+    # S120 — Promo portfolio budget pacing issue
     if 'S120' in flags:
         texts['S120'] = (
             f'{ctx.promo_asin_count} ASIN(s) in active promo. '
@@ -1471,6 +1693,7 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
             + f'Portfolio budgets should be reviewed to prevent intraday depletion.'
         )
 
+    # S122 — GGS committed but SD < 5% of spend
     if 'S122' in flags:
         sd_note = (
             f'SD spend: {dollar(ctx.spend_sd)} ({ctx.pct_sd:.0%} of total). '
@@ -1481,104 +1704,26 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
             f'SD campaigns need to reach at least 5% of total spend to satisfy the GGS commitment.'
         )
 
+    # S123 — SD active but no remarketing (SD_FLEX / SD_AUDI)
     if 'S123' in flags:
         texts['S123'] = (
             f'SD active ({dollar(ctx.spend_sd)}) but no SD_FLEX or SD_AUDI remarketing campaigns. '
             f'Product-view remarketing is not running.'
         )
 
+    # S124 — SD active but no ATC retargeting (GGS section duplicate)
     if 'S124' in flags:
         texts['S124'] = (
             f'SD active ({dollar(ctx.spend_sd)}) but no ATC retargeting in place. '
             f'Add-to-cart retargeting via ProSuite AMC is not activated.'
         )
 
+    # S126 — Branded + NB both > 20% in BA auto layer (promo not relevant here)
     if 'S126' in flags:
         texts['S126'] = (
-            f'No Promo Management activity running. '
-            f'Evaluate Promo Management as a channel expansion for recurring purchases.'
-        )
-
-    # ── structural signal what_we_saw (renumbered controls) ──────────────────
-
-    if 'S018' in flags:
-        texts['S018'] = (
             f'Branded spend is {ctx.branded_spend_pct:.0%} and non-branded is {ctx.non_branded_spend_pct:.0%} '
-            f'of total search term spend — both are significant inside the same auto campaign layer. '
-            f'Branded and non-branded targeting should be in separate campaigns for independent bid control.'
-        )
-
-    if 'S019' in flags:
-        texts['S019'] = (
-            f'Auto campaigns (BA + ATM + WATM) account for {ctx.auto_spend_pct:.0%} of total spend. '
-            f'BAK (manual exact) is only {ctx.manual_exact_pct:.0%}. '
-            f'Discovery is generating learnings that are not being converted into precision manual campaigns.'
-        )
-
-    if 'S025' in flags:
-        texts['S025'] = (
-            f'ACoS is trending {ctx.acos_direction} while TACoS has risen '
-            f'{ctx.tacos_trend_pp:+.1f}pp over the last 3 months. '
-            f'When ACoS improves but TACoS rises, organic sales are likely declining '
-            f'or promotional activity is distorting the total sales denominator.'
-        )
-
-    if 'S048' in flags:
-        texts['S048'] = (
-            f'BAK spend is {pct(ctx.pct_bak)} vs BA spend at {pct(ctx.pct_ba)}. '
-            f'BAK exists but is receiving less than 10% of its BA feeder spend. '
-            f'The harvest cycle has stalled — review BA search term report and promote converting terms to BAK.'
-        )
-
-    if 'S049' in flags:
-        texts['S049'] = (
-            f'BAK represents {pct(ctx.pct_bak)} of total spend ({dollar(ctx.spend_bak)}) '
-            f'but no OP (own product targeting) campaigns are active. '
-            f'Own product pages are undefended — competitors can place ads on your listings.'
-        )
-
-    if 'S050' in flags:
-        texts['S050'] = (
-            f'No BR (Broad Research) campaigns detected. '
-            f'BAK has {pct(ctx.pct_bak)} of spend but no broad match discovery feeder. '
-            f'The keyword harvest is static — no new terms are being tested.'
-        )
-
-    if 'S074' in flags:
-        texts['S074'] = (
-            f'CatchAll campaigns have {ctx.catchall_orders:.0f} orders but BAK is only '
-            f'{pct(ctx.pct_bak)} of total spend. '
-            f'High-converting search terms in CatchAll should be graduated to BAK campaigns '
-            f'for tighter bid control and better efficiency.'
-        )
-
-    if 'S080' in flags:
-        texts['S080'] = (
-            f'CAT_SP campaigns are active but no product category qualifies under the CoE threshold '
-            f'(AsinCount ≥ 30 AND category share ≥ 5% of sales). '
-            f'CAT_SP may be targeting categories that are too narrow or not contributing meaningfully to sales.'
-        )
-
-    if 'S081' in flags:
-        texts['S081'] = (
-            f'Branded search terms represent {ctx.branded_spend_pct:.0%} of spend and '
-            f'non-branded {ctx.non_branded_spend_pct:.0%} — both significant. '
-            f'These are likely in the same BAK bucket. '
-            f'Branded and non-branded terms require separate bid strategies and should be in separate campaigns.'
-        )
-
-    if 'S092' in flags:
-        texts['S092'] = (
-            f'OP product-targeting campaigns are active but no OW own-waterfall auto campaigns found. '
-            f'Own listing pages have OP coverage but no auto-targeting restricted to own pages.'
-        )
-
-    if 'S093' in flags:
-        texts['S093'] = (
-            f'SD expansion signal is present but top-selling ASIN has only '
-            f'{ctx.max_asin_orders_30d:.0f} orders in the period. '
-            f'SD retargeting audiences require sufficient product-view traffic to be effective. '
-            f'Consider waiting until top ASINs reach ≥50 orders/month before launching SD.'
+            f'of total search term spend — both significant inside the same auto campaign layer. '
+            f'Branded and non-branded targeting should be split into separate campaigns for independent bid control.'
         )
 
     return texts
