@@ -248,6 +248,15 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     tacos_con      = ctx.tacos_constraint
     has_constraint = constraint > 0
     has_tacos_con  = tacos_con  > 0
+
+    # Fallback when no constraint is documented:
+    # use current ACoS + 5pp as the working constraint so rules that depend
+    # on constraint arithmetic don't error or silently misfire.
+    # has_constraint stays False so rules gated on documented constraints don't fire.
+    if not has_constraint and ctx.acos_actual > 0:
+        constraint = acos_pp + 5.0
+    if not has_tacos_con and ctx.tacos_actual > 0:
+        tacos_con = tacos_pp + 5.0
     above_acos     = has_constraint and acos_pp  > constraint
     above_acos_10  = has_constraint and acos_pp  > constraint * 1.10
     above_tacos    = has_tacos_con  and tacos_pp > tacos_con
@@ -929,6 +938,12 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
     built from real account numbers, for every control that fired.
     """
     texts: dict[str, str] = {}
+
+    # Working constraint — same fallback logic as _compute_flags.
+    # When no constraint is documented, use current ACoS/TACoS + 5pp
+    # so f-string references produce a meaningful number instead of 0 or NameError.
+    constraint = ctx.acos_constraint if ctx.acos_constraint > 0 else (ctx.acos_actual * 100 + 5.0)
+    tacos_con  = ctx.tacos_constraint if ctx.tacos_constraint > 0 else (ctx.tacos_actual * 100 + 5.0)
 
     def pct(v: float) -> str:
         return f'{v:.0%}'
