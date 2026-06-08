@@ -184,18 +184,16 @@ def run_mastery(input_path: str) -> dict:
 
 def run_strategy(input_path: str) -> dict:
     from reader_databricks_strategy import read_strategy_context
-    from writer_strategy import write_strategy, _compute_flags, _calculate_grade
+    from rules_engine_strategy import evaluate_strategy, calculate_grade
+    from writer_strategy import write_strategy
 
     tpl = TEMPLATES["strategy"]
     if not tpl.exists():
         raise FileNotFoundError(f"Strategy template not found: {tpl}")
 
-    # Read context first — used for flag counts and account name in filename.
-    # write_strategy() will call read_strategy_context() internally as well,
-    # but that is a cheap read-only pass against the same file.
     ctx = read_strategy_context(input_path)
-    flags = _compute_flags(ctx)
-    grade, _ = _calculate_grade(flags)
+    flags, _ = evaluate_strategy(ctx)
+    grade, _ = calculate_grade(flags)
 
     result_path = write_strategy(input_path, str(tpl), str(OUTPUT_DIR))
     fpath = Path(result_path)
@@ -210,7 +208,7 @@ def run_strategy(input_path: str) -> dict:
         "grade":    grade,
         "flag":     sum(1 for v in flags.values() if v == "FLAG"),
         "partial":  sum(1 for v in flags.values() if v == "PARTIAL"),
-        "ok":       0,  # Strategy rows are not individually scored — reviewer-driven
+        "ok":       0,
     }
     del ctx, flags
     return out

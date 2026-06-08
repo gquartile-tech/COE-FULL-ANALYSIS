@@ -217,7 +217,12 @@ _SID_TO_ROW: dict[str, int] = {
 }
 
 
-def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
+# ── _compute_flags, _build_what_we_saw, _calculate_grade removed ─────────────
+# All flag evaluation logic now lives in rules_engine_strategy.py.
+# writer_strategy.py calls evaluate_strategy() and calculate_grade() from there.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _compute_flags_REMOVED(ctx: StrategyContext) -> dict[str, str]:
     """
     Performance-gated strategy suggestions.
 
@@ -930,7 +935,7 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
 
 # ── dynamic What We Saw text ──────────────────────────────────────────────────
 
-def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str, str]:
+def _build_what_we_saw_REMOVED(ctx: StrategyContext, flags: dict[str, str]) -> dict[str, str]:
     """
     Returns {control_id: text} with plain-language What We Saw sentences
     built from real account numbers, for every control that fired.
@@ -1584,7 +1589,7 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
 
 # ── grade calculator ──────────────────────────────────────────────────────────
 
-def _calculate_grade(flags: dict[str, str]) -> tuple[str, str]:
+def _calculate_grade_REMOVED(flags: dict[str, str]) -> tuple[str, str]:
     """Returns (grade_label, interpretation_text)."""
     n_flag    = sum(1 for v in flags.values() if v == 'FLAG')
     n_partial = sum(1 for v in flags.values() if v == 'PARTIAL')
