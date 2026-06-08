@@ -348,6 +348,34 @@ class StrategyContext:
     # ── Tab 38 monthly budget (S113) ─────────────────────────────────────────
     monthly_budget: float = 0.0           # Monthly_Budget__c from tab 38 (0 = not documented)
 
+    # ── S039 — category segmentation gate ────────────────────────────────────
+    categories_above_10pct: int = 0       # categories contributing >10% of total sales (tab 18)
+
+    # ── S053/S054/S055 — campaign-level ACoS by type (tab 08) ────────────────
+    # SP type (Sponsored Products)
+    sp_worst_campaign_name: str = ''      # campaign with highest ACoS among SP-type
+    sp_worst_campaign_acos: float = 0.0   # its ACoS (decimal)
+    sp_campaigns_above_threshold: int = 0 # count of SP campaigns above threshold
+    # SB type (Sponsored Brands)
+    sb_worst_campaign_name: str = ''
+    sb_worst_campaign_acos: float = 0.0
+    sb_campaigns_above_threshold: int = 0
+    # SD type (Sponsored Display)
+    sd_worst_campaign_name: str = ''
+    sd_worst_campaign_acos: float = 0.0
+    sd_campaigns_above_threshold: int = 0
+
+    # ── S101 — tagging and segmentation gap (tab 14) ─────────────────────────
+    tags: list[str] = field(default_factory=list)  # all unique tag values (Tag1–Tag5) from tab 14
+
+    # ── S109 — inefficient ASIN spend (revised logic) ────────────────────────
+    # Fires when ASIN has spend AND (zero sales OR ACoS > 2× constraint)
+    # inefficient_asin_count already exists above — reusing it with new logic
+    inefficient_asin_names: list[str] = field(default_factory=list)  # ASIN IDs for what_we_saw
+
+    # ── S087/S088/S089 — bulk campaign type spend shares ─────────────────────
+    pct_cat_sp: float = 0.0               # CAT_SP_ spend as fraction of total
+
 
 # ── main reader ───────────────────────────────────────────────────────────────
 
@@ -714,17 +742,40 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
                     df14[df14[spend_col].fillna(0) > 0]['asin'].dropna().nunique()
                 )
 
-            # Inefficient ASIN detection — for S107
-            # Fires when: AdSpend > $100 AND ACoS > 1.5x constraint AND Orders < 5
+            # Inefficient ASIN detection — S109 (revised logic)
+            # Fires when: AdSpend > 0 AND (no sales = ACoS is 0/null OR ACoS > 2× constraint)
             acos_col14 = 'ACoS' if 'ACoS' in df14.columns else None
-            if spend_col is not None and acos_col14 is not None and orders_col is not None and ctx.acos_constraint > 0:
-                threshold14 = (ctx.acos_constraint / 100) * 1.5
-                ineff14 = (
-                    (df14[spend_col].fillna(0) > 100) &
-                    (df14[acos_col14].fillna(0) > threshold14) &
-                    (df14[orders_col].fillna(0) < 5)
-                )
-                ctx.inefficient_asin_count = int(ineff14.sum())
+            sales_col14 = 'AdSales' if 'AdSales' in df14.columns else ('TotalSales' if 'TotalSales' in df14.columns else None)
+            if spend_col is not None and ctx.acos_constraint > 0:
+                has_spend14 = df14[spend_col].fillna(0) > 0
+                if acos_col14 is not None:
+                    threshold14 = (ctx.acos_constraint / 100) * 2.0
+                    acos_num14 = _pd14.to_numeric(df14[acos_col14], errors='coerce')
+                    # No sales = acos is NaN or 0 when spend > 0
+                    no_sales = has_spend14 & (acos_num14.isna() | (acos_num14 == 0))
+                    above_2x = has_spend14 & (acos_num14.fillna(0) > threshold14)
+                    ineff14 = no_sales | above_2x
+                    ctx.inefficient_asin_count = int(ineff14.sum())
+                    if ctx.inefficient_asin_count > 0 and 'asin' in df14.columns:
+                        ctx.inefficient_asin_names = list(
+                            df14.loc[ineff14, 'asin'].astype(str).dropna().unique()[:10]
+                        )
+                else:
+                    # Fallback: any ASIN with spend but no orders
+                    if orders_col is not None:
+                        ineff14 = has_spend14 & (df14[orders_col].fillna(0) == 0)
+                        ctx.inefficient_asin_count = int(ineff14.sum())
+
+            # Tags extraction — for S101 (Tagging and Segmentation Gap)
+            tag_cols = [c for c in df14.columns if re.match(r'^Tag\d+$', str(c), re.IGNORECASE)]
+            if tag_cols:
+                tag_values = set()
+                for tc in tag_cols:
+                    tag_values.update(
+                        df14[tc].dropna().astype(str).str.strip()
+                        .loc[lambda s: s != ''].unique()
+                    )
+                ctx.tags = [t for t in tag_values if t and t.lower() not in {'nan', 'none', ''}]
     except Exception:
         pass
 
@@ -880,6 +931,54 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
                     threshold = (ctx.acos_constraint / 100) * 1.5
                     ineff_mask = bak_mask2 & (bak_sp > 200) & (bak_ac > threshold) & (bak_ord < 5)
                     ctx.inefficient_bak_count = int(ineff_mask.sum())
+
+            # Campaign-level ACoS by type — for S053 (SP), S054 (SB), S055 (SD)
+            # "worst offending" = highest ACoS campaign above the constraint threshold
+            if acos_col08 and spend_col08 and ctx.acos_constraint > 0:
+                acos_num = _pd08.to_numeric(df08[acos_col08], errors='coerce').fillna(0)
+                spend_num08 = _pd08.to_numeric(df08[spend_col08], errors='coerce').fillna(0)
+                has_spend_mask = spend_num08 > 0
+
+                def _worst_campaign(type_mask):
+                    m = type_mask & has_spend_mask
+                    if not m.any():
+                        return '', 0.0, 0
+                    subset = df08.loc[m].copy()
+                    subset['_acos_n'] = _pd08.to_numeric(subset[acos_col08], errors='coerce').fillna(0)
+                    threshold_35 = (ctx.acos_constraint / 100) * 1.35
+                    threshold_20 = (ctx.acos_constraint / 100) * 1.20
+                    above = subset[subset['_acos_n'] > threshold_20]
+                    if above.empty:
+                        return '', 0.0, 0
+                    worst = above.loc[above['_acos_n'].idxmax()]
+                    count_above = int((above['_acos_n'] > threshold_20).sum())
+                    return (
+                        str(worst.get('CampaignName', '')),
+                        float(worst['_acos_n']),
+                        count_above,
+                    )
+
+                # SP = Sponsored Products (not SB, SBV, SD)
+                sp_mask = ~(
+                    df08['_name_up'].str.startswith('SB_') |
+                    df08['_name_up'].str.startswith('SBV_') |
+                    df08['_name_up'].str.startswith('SD_')
+                )
+                sb_mask_t = df08['_name_up'].str.startswith('SB_') & ~df08['_name_up'].str.startswith('SBV_')
+                sd_mask_t = df08['_name_up'].str.startswith('SD_')
+
+                ctx.sp_worst_campaign_name, ctx.sp_worst_campaign_acos, ctx.sp_campaigns_above_threshold = _worst_campaign(sp_mask)
+                ctx.sb_worst_campaign_name, ctx.sb_worst_campaign_acos, ctx.sb_campaigns_above_threshold = _worst_campaign(sb_mask_t)
+                ctx.sd_worst_campaign_name, ctx.sd_worst_campaign_acos, ctx.sd_campaigns_above_threshold = _worst_campaign(sd_mask_t)
+
+            # CAT_SP spend share — for S087
+            if spend_col08:
+                total_sp_08 = float(_pd08.to_numeric(df08[spend_col08], errors='coerce').fillna(0).sum())
+                cat_sp_spend = float(_pd08.to_numeric(
+                    df08.loc[df08['_name_up'].str.startswith('CAT_SP_'), spend_col08],
+                    errors='coerce'
+                ).fillna(0).sum())
+                ctx.pct_cat_sp = cat_sp_spend / total_sp_08 if total_sp_08 > 0 else 0.0
     except Exception:
         pass
 
@@ -913,13 +1012,18 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
     except Exception:
         pass
 
-    # ── tab 18 — category performance (CAT_SP qualification gate) ─────────────
+    # ── tab 18 — category performance (CAT_SP qualification gate + S039) ───────
     try:
         cat18_records = _tab_to_records(pa['18_Performance_by_Category'])
         ctx.qualifying_category_count = sum(
             1 for r in cat18_records
             if _safe_float(r.get('AsinCount')) >= 30
             and _safe_float(r.get('TotalSalesPct')) >= 0.05
+        )
+        # S039: count categories each contributing >10% of total sales
+        ctx.categories_above_10pct = sum(
+            1 for r in cat18_records
+            if _safe_float(r.get('TotalSalesPct')) >= 0.10
         )
     except Exception:
         pass
