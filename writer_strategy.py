@@ -1765,28 +1765,28 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str) 
 
     # ════════════════════════════════════════════════════════════════════════════
     # TAB — New Strategy Overview
-    # Col 5  (E) = Auto Review (AUTO/MANUAL — static in template, not overwritten)
-    # Col 6  (F) = STATUS written by agent: FLAG / PARTIAL / OK
-    # Col 10 (J) = What We Saw — dynamic text built from real account numbers
+    # Col 6  (F) = Auto Review (AUTO/MANUAL — static in template, not overwritten)
+    # Col 7  (G) = STATUS written by agent: FLAG / PARTIAL / OK
+    # Col 11 (K) = What We Saw — dynamic text built from real account numbers
     # ════════════════════════════════════════════════════════════════════════════
     ws_ov = wb['New Strategy Overview']
 
     # Reset all AUTO rows to OK before writing — prevents stale template values
-    for row_idx in range(2, 127):
-        if ws_ov.cell(row=row_idx, column=5).value == 'AUTO':
-            ws_ov.cell(row=row_idx, column=6, value='OK')
+    for row_idx in range(2, 130):
+        if ws_ov.cell(row=row_idx, column=6).value == 'AUTO':
+            ws_ov.cell(row=row_idx, column=7, value='OK')
 
-    # Write STATUS (col 6) for every control that fired
+    # Write STATUS (col 7) for every control that fired
     for sid, level in flags.items():
         row_num = _SID_TO_ROW.get(sid)
         if row_num:
-            ws_ov.cell(row=row_num, column=6, value=level)
+            ws_ov.cell(row=row_num, column=7, value=level)
 
     # Reuse dynamic_what already computed above
     for sid, text in dynamic_what.items():
         row_num = _SID_TO_ROW.get(sid)
         if row_num:
-            ws_ov.cell(row=row_num, column=10, value=text)
+            ws_ov.cell(row=row_num, column=11, value=text)
 
     # ════════════════════════════════════════════════════════════════════════════
     # TAB — Account Strategy _Analysis
