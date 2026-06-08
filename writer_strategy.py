@@ -213,7 +213,7 @@ _SID_TO_ROW: dict[str, int] = {
     'S110': 111, 'S111': 112, 'S112': 113, 'S113': 114, 'S114': 115,
     'S115': 116, 'S116': 117, 'S117': 118, 'S118': 119, 'S119': 120,
     'S120': 121, 'S121': 122, 'S122': 123, 'S123': 124, 'S124': 125,
-    'S125': 126, 'S126': 127,
+    'S125': 126, 'S126': 127, 'S127': 128,
 }
 
 
@@ -1765,28 +1765,50 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str) 
 
     # ════════════════════════════════════════════════════════════════════════════
     # TAB — New Strategy Overview
-    # Col 6  (F) = Auto Review (AUTO/MANUAL — static in template, not overwritten)
-    # Col 7  (G) = STATUS written by agent: FLAG / PARTIAL / OK
-    # Col 11 (K) = What We Saw — dynamic text built from real account numbers
+    # Col 5  (E) = Auto Review (AUTO/MANUAL — used only to decide which rows to reset)
+    # Col 6  (F) = STATUS written by agent: FLAG / PARTIAL / OK
+    # Col 10 (J) = What We Saw — dynamic text built from real account numbers
     # ════════════════════════════════════════════════════════════════════════════
     ws_ov = wb['New Strategy Overview']
 
     # Reset all AUTO rows to OK before writing — prevents stale template values
+    # Auto Review is in col 5 (E); STATUS is in col 6 (F)
     for row_idx in range(2, 130):
-        if ws_ov.cell(row=row_idx, column=6).value == 'AUTO':
-            ws_ov.cell(row=row_idx, column=7, value='OK')
+        if ws_ov.cell(row=row_idx, column=5).value == 'AUTO':
+            ws_ov.cell(row=row_idx, column=6, value='OK')
 
-    # Write STATUS (col 7) for every control that fired
+    # Write STATUS (col 6 = F) for every control that fired
     for sid, level in flags.items():
         row_num = _SID_TO_ROW.get(sid)
         if row_num:
-            ws_ov.cell(row=row_num, column=7, value=level)
+            ws_ov.cell(row=row_num, column=6, value=level)
 
-    # Reuse dynamic_what already computed above
+    # Write What We Saw (col 10 = J)
     for sid, text in dynamic_what.items():
         row_num = _SID_TO_ROW.get(sid)
         if row_num:
-            ws_ov.cell(row=row_num, column=11, value=text)
+            ws_ov.cell(row=row_num, column=10, value=text)
+
+    # Fix broken VLOOKUP formulas in cols N (14) and P (16) — these use structured
+    # table references that break when openpyxl saves. Replace with static values
+    # sourced from the Logic and Calculation tab's importance/priority lookup table.
+    _impact_map = {
+        10: 'Critical', 9: 'High', 8: 'High', 7: 'Medium',
+        6: 'Medium', 5: 'Medium', 4: 'Low', 3: 'Low', 2: 'Visibility', 1: 'Visibility',
+    }
+    _priority_map = {
+        10: -18, 9: -15, 8: -13, 7: -11,
+        6: -9, 5: -7, 4: -5, 3: -3, 2: -2, 1: 0,
+    }
+    for row_idx in range(2, 130):
+        importance_val = ws_ov.cell(row=row_idx, column=15).value  # col O = Importance
+        try:
+            imp = int(float(importance_val)) if importance_val is not None else None
+        except (ValueError, TypeError):
+            imp = None
+        if imp is not None:
+            ws_ov.cell(row=row_idx, column=14, value=_impact_map.get(imp, ''))    # col N = Impact
+            ws_ov.cell(row=row_idx, column=16, value=_priority_map.get(imp, ''))  # col P = Priority
 
     # ════════════════════════════════════════════════════════════════════════════
     # TAB — Account Strategy _Analysis

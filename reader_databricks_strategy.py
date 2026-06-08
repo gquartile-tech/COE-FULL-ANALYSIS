@@ -221,6 +221,8 @@ class StrategyContext:
     # ── ASIN tiers (tab 15) ───────────────────────────────────────────────────
     tier1_asin_count: int = 0         # TIER 10–30
     tier1_with_atm: int = 0           # Tier1 ASINs that have ATM spend
+    tier1_total_sales_pct: float = 0.0    # Tier 10-30 share of total sales (for S035)
+    tier1_combined_spend_pct: float = 0.0 # Tier 10-30 share of ATM+BA+BAK spend (for S035)
 
     # ── Tab 14 ASIN-level derived signals ─────────────────────────────────────
     slow_movers_with_ba: int = 0       # ASINs with <3 orders AND BA_Spend > 0
@@ -734,6 +736,23 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
                         f"{row['asin']} ({int(row[orders_col])} orders)"
                         for _, row in df14.loc[overlap_mask].iterrows()
                     ]
+
+            # S035 — Best-Seller Spend Concentration
+            # Compute tier 10-30 share of total sales and total ATM+BA+BAK spend
+            if tier_col is not None and 'TotalSales' in df14.columns:
+                bak_col14 = 'BAK_Spend' if 'BAK_Spend' in df14.columns else None
+                is_tier1  = df14[tier_col].astype(str).str.upper().isin({'TIER 10', 'TIER 20', 'TIER 30'})
+                total_sales_all = df14['TotalSales'].fillna(0).sum()
+                tier1_sales     = df14.loc[is_tier1, 'TotalSales'].fillna(0).sum()
+                if total_sales_all > 0:
+                    ctx.tier1_total_sales_pct = float(tier1_sales / total_sales_all)
+                # Combined ATM+BA+BAK spend share for tier1 ASINs
+                spend_cols_t1 = [c for c in [atm_col, ba_col, bak_col14] if c is not None]
+                if spend_cols_t1 and spend_col is not None:
+                    total_spend_all = df14[spend_col].fillna(0).sum()
+                    tier1_combined  = df14.loc[is_tier1, spend_cols_t1].fillna(0).values.sum()
+                    if total_spend_all > 0:
+                        ctx.tier1_combined_spend_pct = float(tier1_combined / total_spend_all)
 
             # Catalog vs spending ASIN counts — for S022
             ctx.catalog_asin_count  = int(df14['asin'].dropna().nunique())
