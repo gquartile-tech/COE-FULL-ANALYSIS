@@ -221,8 +221,6 @@ class StrategyContext:
     # ── ASIN tiers (tab 15) ───────────────────────────────────────────────────
     tier1_asin_count: int = 0         # TIER 10–30
     tier1_with_atm: int = 0           # Tier1 ASINs that have ATM spend
-    tier1_total_sales_pct: float = 0.0    # Tier 10-30 share of total sales (for S035)
-    tier1_combined_spend_pct: float = 0.0 # Tier 10-30 share of ATM+BA+BAK spend (for S035)
 
     # ── Tab 14 ASIN-level derived signals ─────────────────────────────────────
     slow_movers_with_ba: int = 0       # ASINs with <3 orders AND BA_Spend > 0
@@ -526,37 +524,49 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
         1 for r in camp_records
         if _safe_str(r.get('PortfolioName')).startswith('Campaign Not in Portfolio')
     )
-    ctx.has_cat_sp           = any(re.search(r'\bCAT_SP', n, re.IGNORECASE) for n in names)
-    ctx.has_cat_non_standard = any(re.search(r'\bCAT_', n, re.IGNORECASE) for n in names) and not ctx.has_cat_sp
-    ctx.has_sbv              = any(re.search(r'\bSBV', n, re.IGNORECASE) for n in names)
-    ctx.has_sd               = any(re.search(r'\bSD_', n, re.IGNORECASE) for n in names)
-    ctx.has_watm             = any(re.search(r'\bWATM', n, re.IGNORECASE) for n in names)
-    # has_catchall: only match campaigns with 'catch all' or 'catchall' in the name — NOT WATM
-    ctx.has_catchall         = any(re.search(r'catch.?all', n, re.IGNORECASE) for n in names)
-    ctx.ba_campaign_count    = sum(
-        1 for r in camp_records
-        if _safe_str(r.get('CampaignSubType')).upper() == 'BA'
+    # ── campaign presence signals — use CampaignSubType (column E) as primary source ──
+    # SubType values from Databricks: ATM, BA, BAK, BR, CAT_SP, OP, OW, PH, SB, SBV,
+    #   SD_AUDI, SD_PRD, SD_FLEX, SD_SPT, SPT, WATM, Non-Quartile, Imported
+    # CatchAll is NOT a SubType — it shows as Non-Quartile; detect via name pattern
+    #   scoped to Non-Quartile rows only to avoid false matches on Quartile campaigns.
+
+    def _subtype_eq(val: str) -> bool:
+        return any(_safe_str(r.get('CampaignSubType')).upper() == val for r in camp_records)
+
+    def _subtype_count(val: str) -> int:
+        return sum(1 for r in camp_records if _safe_str(r.get('CampaignSubType')).upper() == val)
+
+    ctx.has_cat_sp           = _subtype_eq('CAT_SP')
+    ctx.has_cat_non_standard = (
+        any(re.search(r'\bCAT_', n, re.IGNORECASE) for n in names) and not ctx.has_cat_sp
     )
-    # NEW signals derived from tab 08
-    ctx.has_bak = any(
-        _safe_str(r.get('CampaignSubType')).upper() == 'BAK'
+    ctx.has_sbv              = _subtype_eq('SBV')
+    ctx.has_sd               = any(
+        _safe_str(r.get('CampaignSubType')).upper().startswith('SD')
         for r in camp_records
     )
-    ctx.has_op = any(re.search(r'\bOP_|\bOP\b', n, re.IGNORECASE) for n in names)
-    ctx.has_sd_prd = any(re.search(r'\bSD_PRD\b', n, re.IGNORECASE) for n in names)
-    ctx.has_vcpm = any(re.search(r'\bVCPM\b', n, re.IGNORECASE) for n in names)
-    ctx.watm_campaign_count = sum(
-        1 for n in names if re.search(r'\bWATM\b', n, re.IGNORECASE)
-    )
-    # BR discovery and OW own-page coverage signals
-    ctx.has_br = any(
-        _safe_str(r.get('CampaignSubType')).upper() == 'BR'
+    ctx.has_watm             = _subtype_eq('WATM')
+    ctx.watm_campaign_count  = _subtype_count('WATM')
+
+    # CatchAll: Non-Quartile rows only, then name pattern on CampaignName
+    non_qt_names = [
+        _safe_str(r.get('CampaignName'))
         for r in camp_records
-    )
-    ctx.has_ow = any(re.search(r'\bOW_', n, re.IGNORECASE) for n in names)
-    ctx.ow_campaign_count = sum(
-        1 for n in names if re.search(r'\bOW_', n, re.IGNORECASE)
-    )
+        if _safe_str(r.get('CampaignSubType')).upper() == 'NON-QUARTILE'
+    ]
+    ctx.has_catchall = any(re.search(r'catch.?all', n, re.IGNORECASE) for n in non_qt_names)
+
+    ctx.ba_campaign_count = _subtype_count('BA')
+    ctx.has_bak           = _subtype_eq('BAK')
+    ctx.has_op            = _subtype_eq('OP')
+    ctx.has_sd_prd        = _subtype_eq('SD_PRD')
+    ctx.has_vcpm          = any(re.search(r'\bVCPM\b', n, re.IGNORECASE) for n in names)
+
+    # BR and OW via SubType
+    ctx.has_br            = _subtype_eq('BR')
+    ctx.has_ow            = _subtype_eq('OW')
+    ctx.ow_campaign_count = _subtype_count('OW')
+
     # SBV naming compliance: all SBV campaigns should start with SBV_
     sbv_names = [n for n in names if re.search(r'\bSBV\b', n, re.IGNORECASE)]
     ctx.sbv_naming_compliant = all(
@@ -737,23 +747,6 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
                         for _, row in df14.loc[overlap_mask].iterrows()
                     ]
 
-            # S035 — Best-Seller Spend Concentration
-            # Compute tier 10-30 share of total sales and total ATM+BA+BAK spend
-            if tier_col is not None and 'TotalSales' in df14.columns:
-                bak_col14 = 'BAK_Spend' if 'BAK_Spend' in df14.columns else None
-                is_tier1  = df14[tier_col].astype(str).str.upper().isin({'TIER 10', 'TIER 20', 'TIER 30'})
-                total_sales_all = df14['TotalSales'].fillna(0).sum()
-                tier1_sales     = df14.loc[is_tier1, 'TotalSales'].fillna(0).sum()
-                if total_sales_all > 0:
-                    ctx.tier1_total_sales_pct = float(tier1_sales / total_sales_all)
-                # Combined ATM+BA+BAK spend share for tier1 ASINs
-                spend_cols_t1 = [c for c in [atm_col, ba_col, bak_col14] if c is not None]
-                if spend_cols_t1 and spend_col is not None:
-                    total_spend_all = df14[spend_col].fillna(0).sum()
-                    tier1_combined  = df14.loc[is_tier1, spend_cols_t1].fillna(0).values.sum()
-                    if total_spend_all > 0:
-                        ctx.tier1_combined_spend_pct = float(tier1_combined / total_spend_all)
-
             # Catalog vs spending ASIN counts — for S022
             ctx.catalog_asin_count  = int(df14['asin'].dropna().nunique())
             if spend_col is not None:
@@ -830,24 +823,32 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
             df08['_name'] = df08['CampaignName'].astype(str).str.strip()
             df08['_name_up'] = df08['_name'].str.upper()
             acos_col08 = '_ACOS' if '_ACOS' in df08.columns else ('ACoS' if 'ACoS' in df08.columns else None)
+            sub_col08  = 'CampaignSubType' if 'CampaignSubType' in df08.columns else None
 
-            def _prefix_acos(prefix):
-                mask = df08['_name_up'].str.startswith(prefix)
+            # Helper: avg ACoS by CampaignSubType value (primary) or name prefix (fallback)
+            def _subtype_acos(subtype_val: str, prefix_fallback: str) -> float:
+                if sub_col08:
+                    mask = df08[sub_col08].astype(str).str.upper() == subtype_val.upper()
+                else:
+                    mask = df08['_name_up'].str.startswith(prefix_fallback)
                 if acos_col08 and mask.any():
                     vals = _pd08.to_numeric(df08.loc[mask, acos_col08], errors='coerce').dropna()
                     return float(vals.mean()) if not vals.empty else 0.0
                 return 0.0
 
-            def _prefix_count(prefix):
-                return int(df08['_name_up'].str.startswith(prefix).sum())
+            def _subtype_count08(subtype_val: str, prefix_fallback: str) -> int:
+                if sub_col08:
+                    return int((df08[sub_col08].astype(str).str.upper() == subtype_val.upper()).sum())
+                return int(df08['_name_up'].str.startswith(prefix_fallback).sum())
 
-            ctx.atm_avg_acos = _prefix_acos('ATM_')
-            ctx.br_avg_acos  = _prefix_acos('BR_')
-            ctx.ph_avg_acos  = _prefix_acos('PH_')
-            ctx.ow_avg_acos  = _prefix_acos('OW_')
-            ctx.br_campaign_count = _prefix_count('BR_')
-            ctx.ow_campaign_count = _prefix_count('OW_')
-            ctx.ph_campaign_count = _prefix_count('PH_')
+            ctx.atm_avg_acos      = _subtype_acos('ATM',    'ATM_')
+            ctx.br_avg_acos       = _subtype_acos('BR',     'BR_')
+            ctx.ph_avg_acos       = _subtype_acos('PH',     'PH_')
+            ctx.ow_avg_acos       = _subtype_acos('OW',     'OW_')
+            ctx.br_campaign_count = _subtype_count08('BR',  'BR_')
+            ctx.ow_campaign_count = _subtype_count08('OW',  'OW_')
+            ctx.ph_campaign_count = _subtype_count08('PH',  'PH_')
+            ctx.op_campaign_count = _subtype_count08('OP',  'OP_')
 
             # Low-order campaign count — for S041
             orders_col08 = 'Orders' if 'Orders' in df08.columns else None
@@ -856,9 +857,9 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
                 lo = df08[orders_col08].fillna(0)
                 ctx.low_order_campaign_count = int(((lo >= 1) & (lo <= 3)).sum())
 
-            # SPT spend-weighted avg ACoS — for S030
-            if sub_col and acos_col08 and spend_col08:
-                spt_mask = df08[sub_col].astype(str).str.upper() == 'SPT'
+            # SPT spend-weighted avg ACoS — for S031
+            if sub_col08 and acos_col08 and spend_col08:
+                spt_mask = df08[sub_col08].astype(str).str.upper() == 'SPT'
                 if spt_mask.any():
                     spt_df   = df08.loc[spt_mask].copy()
                     spt_acos = _pd08.to_numeric(spt_df[acos_col08], errors='coerce').fillna(0)
@@ -867,9 +868,9 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
                     if total_spt_spend > 0:
                         ctx.spt_avg_acos = float((spt_acos * spt_spnd).sum() / total_spt_spend)
 
-            # BAK campaigns list — for S078 what_we_saw
-            if sub_col and acos_col08 and spend_col08:
-                bak_mask = df08[sub_col].astype(str).str.upper() == 'BAK'
+            # BAK campaigns list — for what_we_saw
+            if sub_col08 and acos_col08 and spend_col08:
+                bak_mask = df08[sub_col08].astype(str).str.upper() == 'BAK'
                 if bak_mask.any():
                     bak_df = df08.loc[bak_mask].copy()
                     total_spend_acct = float(
@@ -885,64 +886,66 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
                             'acos':         ac,
                         })
 
-            # Both WATM and CatchAll active — for S076
-            sub_col = 'CampaignSubType' if 'CampaignSubType' in df08.columns else None
-            has_watm08 = (
-                (sub_col and (df08[sub_col].astype(str).str.upper() == 'WATM').any())
-                or df08['_name_up'].str.startswith('WATM_').any()
-            )
-            has_catchall08 = df08['_name'].str.lower().str.contains(r'catch.?all', regex=True).any()
+            # Both WATM and CatchAll active simultaneously — for S084
+            # WATM: via SubType; CatchAll: Non-Quartile SubType + name pattern
+            if sub_col08:
+                has_watm08     = (df08[sub_col08].astype(str).str.upper() == 'WATM').any()
+                nq_mask08      = df08[sub_col08].astype(str).str.upper() == 'NON-QUARTILE'
+                has_catchall08 = bool(
+                    df08.loc[nq_mask08, '_name'].str.lower()
+                    .str.contains(r'catch.?all', regex=True, na=False).any()
+                )
+            else:
+                has_watm08     = df08['_name_up'].str.startswith('WATM_').any()
+                has_catchall08 = df08['_name'].str.lower().str.contains(r'catch.?all', regex=True, na=False).any()
             ctx.has_both_watm_and_catchall = bool(has_watm08 and has_catchall08)
 
             # BAK name overlaps BA name — for S038
-            if sub_col:
-                ba_names  = set(df08.loc[df08[sub_col].astype(str).str.upper() == 'BA', '_name'].tolist())
-                bak_names = set(df08.loc[df08[sub_col].astype(str).str.upper() == 'BAK', '_name'].tolist())
-                # check if any BAK shares the same parent-ASIN token as a BA
+            if sub_col08:
+                ba_names  = set(df08.loc[df08[sub_col08].astype(str).str.upper() == 'BA',  '_name'].tolist())
+                bak_names = set(df08.loc[df08[sub_col08].astype(str).str.upper() == 'BAK', '_name'].tolist())
                 def _extract_token(n):
-                    # e.g. BA_P_APRQ8M786493_... → APRQ8M786493
                     parts = str(n).split('_')
                     return parts[2] if len(parts) > 2 else n
                 ba_tokens  = {_extract_token(n) for n in ba_names}
                 bak_tokens = {_extract_token(n) for n in bak_names}
                 ctx.bak_name_overlaps_ba = bool(ba_tokens & bak_tokens)
 
-            # Campaign-type outperforming signals — new controls S034/S035/S042/S043/S057-S060
-            def _pfx_acos(pfx):
-                mask = df08['_name_up'].str.startswith(pfx)
-                if acos_col08 and mask.any():
-                    vals = _pd08.to_numeric(df08.loc[mask, acos_col08], errors='coerce').dropna()
-                    return float(vals.mean()) if not vals.empty else 0.0
-                return 0.0
+            # Campaign-type avg ACoS for outperforming signals — SubType primary, prefix fallback
+            ctx.sd_flex_avg_acos = _subtype_acos('SD_FLEX', 'SD_FLEX_')
+            ctx.sd_audi_avg_acos = _subtype_acos('SD_AUDI', 'SD_AUDI_')
+            ctx.sd_prd_avg_acos  = _subtype_acos('SD_PRD',  'SD_PRD_')
+            ctx.sb_avg_acos      = _subtype_acos('SB',      'SB_')
+            ctx.sbv_avg_acos     = _subtype_acos('SBV',     'SBV_')
+            ctx.op_avg_acos      = _subtype_acos('OP',      'OP_')
+            ctx.catsp_avg_acos   = _subtype_acos('CAT_SP',  'CAT_SP_')
 
-            ctx.sd_flex_avg_acos = _pfx_acos('SD_FLEX_')
-            ctx.sd_audi_avg_acos = _pfx_acos('SD_AUDI_')
-            ctx.sd_prd_avg_acos  = _pfx_acos('SD_PRD_')
-            ctx.sb_avg_acos      = _pfx_acos('SB_')
-            ctx.sbv_avg_acos     = _pfx_acos('SBV_')
-            ctx.ow_avg_acos      = _pfx_acos('OW_')
-            ctx.op_avg_acos      = _pfx_acos('OP_')
-            ctx.op_campaign_count = _prefix_count('OP_')
-            ctx.catsp_avg_acos   = _pfx_acos('CAT_SP_')
-
-            # CatchAll orders
+            # CatchAll orders — Non-Quartile rows only, then name pattern
             if orders_col08:
-                ca_mask = df08['_name'].str.lower().str.contains(r'catch.?all', regex=True, na=False)
+                if sub_col08:
+                    nq_rows = df08[sub_col08].astype(str).str.upper() == 'NON-QUARTILE'
+                    ca_mask = nq_rows & df08['_name'].str.lower().str.contains(r'catch.?all', regex=True, na=False)
+                else:
+                    ca_mask = df08['_name'].str.lower().str.contains(r'catch.?all', regex=True, na=False)
                 ctx.catchall_orders = float(df08.loc[ca_mask, orders_col08].fillna(0).sum())
 
-            # Paused SB / SBV campaigns with historical spend — for S064/S066
+            # Paused SB / SBV campaigns — SubType primary, prefix fallback
             if 'State' in df08.columns and spend_col08:
                 paused_mask = df08['State'].astype(str).str.lower() == 'paused'
                 spend_num   = _pd08.to_numeric(df08[spend_col08], errors='coerce').fillna(0)
                 had_spend   = spend_num > 0
-                sb_mask  = df08['_name_up'].str.startswith('SB_')
-                sbv_mask = df08['_name_up'].str.startswith('SBV_')
-                ctx.paused_sb_count  = int((paused_mask & had_spend & sb_mask  & ~sbv_mask).sum())
+                if sub_col08:
+                    sb_mask  = df08[sub_col08].astype(str).str.upper() == 'SB'
+                    sbv_mask = df08[sub_col08].astype(str).str.upper() == 'SBV'
+                else:
+                    sb_mask  = df08['_name_up'].str.startswith('SB_') & ~df08['_name_up'].str.startswith('SBV_')
+                    sbv_mask = df08['_name_up'].str.startswith('SBV_')
+                ctx.paused_sb_count  = int((paused_mask & had_spend & sb_mask).sum())
                 ctx.paused_sbv_count = int((paused_mask & had_spend & sbv_mask).sum())
 
-            # BAK inefficiency — for S053: spend>$200, ACoS>1.5x constraint, orders<5
-            if sub_col and acos_col08 and spend_col08 and orders_col08:
-                bak_mask2 = df08[sub_col].astype(str).str.upper() == 'BAK'
+            # BAK inefficiency — spend>$200, ACoS>1.5x constraint, orders<5
+            if sub_col08 and acos_col08 and spend_col08 and orders_col08:
+                bak_mask2 = df08[sub_col08].astype(str).str.upper() == 'BAK'
                 if bak_mask2.any() and ctx.acos_constraint > 0:
                     bak_sp   = _pd08.to_numeric(df08[spend_col08],  errors='coerce').fillna(0)
                     bak_ac   = _pd08.to_numeric(df08[acos_col08],   errors='coerce').fillna(0)
@@ -977,14 +980,19 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
                         count_above,
                     )
 
-                # SP = Sponsored Products (not SB, SBV, SD)
-                sp_mask = ~(
-                    df08['_name_up'].str.startswith('SB_') |
-                    df08['_name_up'].str.startswith('SBV_') |
-                    df08['_name_up'].str.startswith('SD_')
-                )
-                sb_mask_t = df08['_name_up'].str.startswith('SB_') & ~df08['_name_up'].str.startswith('SBV_')
-                sd_mask_t = df08['_name_up'].str.startswith('SD_')
+                # SP / SB / SD type masks — SubType primary, prefix fallback
+                if sub_col08:
+                    sp_mask   = ~df08[sub_col08].astype(str).str.upper().isin(['SB', 'SBV', 'SD_FLEX', 'SD_AUDI', 'SD_PRD', 'SD_SPT'])
+                    sb_mask_t = df08[sub_col08].astype(str).str.upper() == 'SB'
+                    sd_mask_t = df08[sub_col08].astype(str).str.upper().str.startswith('SD')
+                else:
+                    sp_mask   = ~(
+                        df08['_name_up'].str.startswith('SB_') |
+                        df08['_name_up'].str.startswith('SBV_') |
+                        df08['_name_up'].str.startswith('SD_')
+                    )
+                    sb_mask_t = df08['_name_up'].str.startswith('SB_') & ~df08['_name_up'].str.startswith('SBV_')
+                    sd_mask_t = df08['_name_up'].str.startswith('SD_')
 
                 ctx.sp_worst_campaign_name, ctx.sp_worst_campaign_acos, ctx.sp_campaigns_above_threshold = _worst_campaign(sp_mask)
                 ctx.sb_worst_campaign_name, ctx.sb_worst_campaign_acos, ctx.sb_campaigns_above_threshold = _worst_campaign(sb_mask_t)
@@ -993,9 +1001,12 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
             # CAT_SP spend share — for S087
             if spend_col08:
                 total_sp_08 = float(_pd08.to_numeric(df08[spend_col08], errors='coerce').fillna(0).sum())
+                if sub_col08:
+                    catsp_rows = df08[sub_col08].astype(str).str.upper() == 'CAT_SP'
+                else:
+                    catsp_rows = df08['_name_up'].str.startswith('CAT_SP_')
                 cat_sp_spend = float(_pd08.to_numeric(
-                    df08.loc[df08['_name_up'].str.startswith('CAT_SP_'), spend_col08],
-                    errors='coerce'
+                    df08.loc[catsp_rows, spend_col08], errors='coerce'
                 ).fillna(0).sum())
                 ctx.pct_cat_sp = cat_sp_spend / total_sp_08 if total_sp_08 > 0 else 0.0
     except Exception:

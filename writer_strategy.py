@@ -18,60 +18,31 @@ What it does
 6.  Writes the ChildASIN View tab.
 7.  Saves the output .xlsm file.
 
-Auto-flag logic (column G, STRATEGY OVERVIEW)
-─────────────────────────────────────────────
-Row  3  ACoS target above constraint by >10pp                             → FLAG
-Row  3  ACoS target above constraint by 5–10pp                            → PARTIAL
-Row  4  ACoS consistently decreasing, changes ≥2 in 30 days              → PARTIAL
-Row  6  ACoS being loosened (direction = increasing)                      → FLAG
-Row  7  NB ACoS ≥3× branded AND branded spend ≥25% AND target above branded → FLAG
-Row  8  Account has OOB events in period                                  → FLAG
-Row 10  Slow mover ASINs (<3 orders) have BA spend AND no ATM/WATM       → FLAG
-Row 10  Slow mover ASINs in BA but WATM exists                           → PARTIAL
-Row 12  ATM+BA overlap on ASIN >80 orders AND CPC >$1.20                 → FLAG
-Row 13  ATM+BA overlap on ASIN >80 orders (general)                      → PARTIAL
-Row 17  Single parent ASIN but bulk multi-ASIN structures active          → FLAG
-Row 18  CPC increased YoY by >20%                                         → FLAG
-Row 18  CPC increased YoY by 10–20%                                       → PARTIAL
-Row 20  Account has OOB events in period (budget constraint note)         → FLAG
-Row 29  Framework compliance gap: Imported+NonQT > 40% of spend          → FLAG
-Row 29  Framework compliance gap: Imported+NonQT 20–40%                  → PARTIAL
-Row 30  SPT present AND SPT campaign ACoS above constraint                → PARTIAL
-Row 31  SPT present AND any Tier 100 ASIN has SPT spend                  → PARTIAL
-Row 32  ATM < 3% of spend (severely underweighted)                       → FLAG
-Row 32  ATM 3–8% of spend                                                → PARTIAL
-Row 37  Any ASIN with <3 orders has BA spend                             → FLAG
-Row 37  BA active AND ACoS above constraint (no slow movers detected)    → PARTIAL
-Row 39  BA active but fewer than 2 campaigns (no category segmentation)  → FLAG
-Row 41  >80 campaigns with only 1–3 orders in period                     → FLAG
-Row 41  >40 campaigns with only 1–3 orders in period                     → PARTIAL
-Row 45  No SB spend at all                                                → FLAG
-Row 47  Imported spend > 0 (import kickoff needed)                       → FLAG
-Row 62  No CAT_SP AND OP outperforming by ≥20% AND account has headroom  → FLAG
-Row 62  No CAT_SP AND OP outperforming AND ACoS above constraint         → PARTIAL
-Row 63  No SBV campaigns                                                  → FLAG
-Row 67  No OP / product-target campaigns detected                         → PARTIAL
-Row 71  Multiple WATM campaigns (>1) active                               → PARTIAL
-Row 76  Missing WATM or CatchAll (coverage gap)                          → FLAG
-Row 82  No SD campaigns and SD impressions = 0                            → FLAG
-Row 83  No SD_ATC / ProSuite ATC campaign                                 → PARTIAL
-Row 84  SD active but no SD_PRD campaigns                                 → PARTIAL
-Row 86  Portfolios present but 0 managed                                  → PARTIAL
-Row 86  0 portfolios with budget cap and >3 portfolios                    → FLAG
-Row 78  BAK campaign >15% of spend AND ACoS >100% of constraint          → FLAG
-Row 78  BAK campaign >15% of spend AND ACoS >50% of constraint           → PARTIAL
-Row 87  Non-QT + Imported > 50% of spend                                 → FLAG
-Row 88  Campaign-level ACoS overrides detected                            → PARTIAL
-Row 89  Product-level ACoS overrides detected                             → PARTIAL
-Row 93  SBV campaigns present but not named with SBV_ convention         → PARTIAL
-Row 94  Campaigns not in portfolio > 0                                    → FLAG
-Row 95  Campaigns not in portfolio > 0 (rename/unmanaged note)           → FLAG
-Row 104 SB active (impressions > 0) but SBV spend = 0                   → FLAG
-Row 111 YoY ad sales is negative                                          → FLAG
-Row 120 GGS committed AND SD spend < 5% of total                         → FLAG
-Row 121 GGS committed AND SD spend < 5% of total (display coverage note) → FLAG
-Row 126 SD active but no SD_FLEX / remarketing campaigns                 → PARTIAL
-Row 127 SD active but no ATC retargeting (duplicate of row 83 at GGS)   → PARTIAL
+Auto-flag logic
+───────────────
+All flag evaluation logic lives in rules_engine_strategy.py.
+This writer calls evaluate_strategy() and calculate_grade() from there.
+The rules engine returns (flags, dynamic_what) which are written to the template.
+
+Key control behaviours (see rules_engine_strategy.py for full detail):
+  S010  Slow movers in BA — only fires when ATM-qualifying ASINs exist (≥1.5 orders/day)
+  S011  Slow movers in BA, no ATM-qualifying ASIN — bulk methodology message. Mutually exclusive with S010.
+  S012  ATM+BA overlap — only fires when CPC > $1.20
+  S013  ATM+BA overlap (general) — suppressed on bulk accounts (no ATM-qualifying ASINs)
+  S014  Bulk structure: discovery (BA+WATM/CatchAll+CAT_SP) / precision (BAK) / defensive (SPT)
+  S021  OOB — three cases: efficient (negotiate budget), inefficient (fix ACoS), declining sales
+  S033  ATM expansion — suppressed when no ASIN qualifies for ATM
+  S037  BA slow movers — suppressed when S014 is FLAG
+  S038  BAK missing — suppressed when S014 is FLAG
+  S075  OP expansion — op_campaign_count via CampaignSubType; spend gate ≥$1,000
+  S085  WATM underweighted — spend gate: total_spend ≥$1,000 AND spend_watm > 0
+  S086  BAK efficiency — PARTIAL threshold tightened to 80% of constraint
+  S109  Inefficient ASIN spend — shows up to 3 ASINs + "+N more"
+  S113  Recurring sales — suppressed when S119 fires
+  S124  GGS SD compliance — fires only when ggs_status == 'Yes'
+
+Campaign type detection uses CampaignSubType (column E of tab 08) as primary source.
+CatchAll detection: Non-Quartile rows only, then name pattern on CampaignName.
 """
 
 from __future__ import annotations
@@ -213,7 +184,7 @@ _SID_TO_ROW: dict[str, int] = {
     'S110': 111, 'S111': 112, 'S112': 113, 'S113': 114, 'S114': 115,
     'S115': 116, 'S116': 117, 'S117': 118, 'S118': 119, 'S119': 120,
     'S120': 121, 'S121': 122, 'S122': 123, 'S123': 124, 'S124': 125,
-    'S125': 126, 'S126': 127, 'S127': 128,
+    'S125': 126, 'S126': 127,
 }
 
 
@@ -1765,50 +1736,28 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str) 
 
     # ════════════════════════════════════════════════════════════════════════════
     # TAB — New Strategy Overview
-    # Col 5  (E) = Auto Review (AUTO/MANUAL — used only to decide which rows to reset)
-    # Col 6  (F) = STATUS written by agent: FLAG / PARTIAL / OK
-    # Col 10 (J) = What We Saw — dynamic text built from real account numbers
+    # Col 6  (F) = Auto Review (AUTO/MANUAL — static in template, not overwritten)
+    # Col 7  (G) = STATUS written by agent: FLAG / PARTIAL / OK
+    # Col 11 (K) = What We Saw — dynamic text built from real account numbers
     # ════════════════════════════════════════════════════════════════════════════
     ws_ov = wb['New Strategy Overview']
 
     # Reset all AUTO rows to OK before writing — prevents stale template values
-    # Auto Review is in col 5 (E); STATUS is in col 6 (F)
     for row_idx in range(2, 130):
-        if ws_ov.cell(row=row_idx, column=5).value == 'AUTO':
-            ws_ov.cell(row=row_idx, column=6, value='OK')
+        if ws_ov.cell(row=row_idx, column=6).value == 'AUTO':
+            ws_ov.cell(row=row_idx, column=7, value='OK')
 
-    # Write STATUS (col 6 = F) for every control that fired
+    # Write STATUS (col 7) for every control that fired
     for sid, level in flags.items():
         row_num = _SID_TO_ROW.get(sid)
         if row_num:
-            ws_ov.cell(row=row_num, column=6, value=level)
+            ws_ov.cell(row=row_num, column=7, value=level)
 
-    # Write What We Saw (col 10 = J)
+    # Reuse dynamic_what already computed above
     for sid, text in dynamic_what.items():
         row_num = _SID_TO_ROW.get(sid)
         if row_num:
-            ws_ov.cell(row=row_num, column=10, value=text)
-
-    # Fix broken VLOOKUP formulas in cols N (14) and P (16) — these use structured
-    # table references that break when openpyxl saves. Replace with static values
-    # sourced from the Logic and Calculation tab's importance/priority lookup table.
-    _impact_map = {
-        10: 'Critical', 9: 'High', 8: 'High', 7: 'Medium',
-        6: 'Medium', 5: 'Medium', 4: 'Low', 3: 'Low', 2: 'Visibility', 1: 'Visibility',
-    }
-    _priority_map = {
-        10: -18, 9: -15, 8: -13, 7: -11,
-        6: -9, 5: -7, 4: -5, 3: -3, 2: -2, 1: 0,
-    }
-    for row_idx in range(2, 130):
-        importance_val = ws_ov.cell(row=row_idx, column=15).value  # col O = Importance
-        try:
-            imp = int(float(importance_val)) if importance_val is not None else None
-        except (ValueError, TypeError):
-            imp = None
-        if imp is not None:
-            ws_ov.cell(row=row_idx, column=14, value=_impact_map.get(imp, ''))    # col N = Impact
-            ws_ov.cell(row=row_idx, column=16, value=_priority_map.get(imp, ''))  # col P = Priority
+            ws_ov.cell(row=row_num, column=11, value=text)
 
     # ════════════════════════════════════════════════════════════════════════════
     # TAB — Account Strategy _Analysis
