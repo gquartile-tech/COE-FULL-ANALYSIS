@@ -576,11 +576,20 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
     # ── tab 25 — portfolios ───────────────────────────────────────────────────
     port_records = _tab_to_records(pa['25_Portfolio_Insights_and_Confi'])
     ctx.portfolio_count    = len(port_records)
+
+    def _is_true(val) -> bool:
+        """Normalise booleans — openpyxl returns True/False, calamine may return 1/0 or strings."""
+        if val is True or val == 1:
+            return True
+        if isinstance(val, str) and val.strip().lower() in ('true', '1', 'yes'):
+            return True
+        return False
+
     ctx.managed_portfolio_count = sum(
-        1 for r in port_records if r.get('IsManaged') is True
+        1 for r in port_records if _is_true(r.get('IsManaged'))
     )
     ctx.portfolios_with_budget_cap = sum(
-        1 for r in port_records if r.get('IsBudgetCap') is True
+        1 for r in port_records if _is_true(r.get('IsBudgetCap'))
     )
     ctx.portfolio_names = [_safe_str(r.get('Portfolio_Name')) for r in port_records]
     # GGS gate: detect SD portfolio commitment.
@@ -600,7 +609,13 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
     # ── tab 42 — GGS ─────────────────────────────────────────────────────────
     ggs_records = _tab_to_records(pa['42_Amazon_GGS_Domo'])
     if ggs_records:
-        ggs_vals = [_safe_str(r.get('Amazon GGS')) for r in ggs_records]
+        # Column name confirmed: 'Amazon GGS' — add fallbacks for resilience
+        _ggs_col = next(
+            (k for k in (ggs_records[0] or {}).keys()
+             if re.sub(r'[\s_]', '', str(k)).lower() in ('amazongs', 'ggsstatus', 'ggs')),
+            'Amazon GGS'
+        )
+        ggs_vals = [_safe_str(r.get(_ggs_col)) for r in ggs_records]
         ctx.ggs_status = 'Yes' if any(v == 'Yes' for v in ggs_vals) else 'No'
         ctx.sd_impressions = sum(
             int(_safe_float(r.get('Impressions')))
@@ -655,10 +670,19 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
 
     # ── tab 15 — ASIN tiers ───────────────────────────────────────────────────
     asin_records = _tab_to_records(pa['15_Campaign_Performance_by_PARE'])
-    tier1 = [r for r in asin_records if _safe_str(r.get('Tier')) in ('TIER 10', 'TIER 20', 'TIER 30')]
+
+    # ATM-qualifying threshold: ≥1.5 orders/day × 30 days = 45 orders
+    # Tier labels (TIER 10/20/30) are unreliable — accounts can have TIER 50/80
+    # ASINs with 20+ orders/day that clearly qualify for ATM.
+    # Use Orders column directly as the source of truth.
+    _ATM_ORDERS_THRESHOLD = 45
+    tier1 = [
+        r for r in asin_records
+        if _safe_float(r.get('Orders')) >= _ATM_ORDERS_THRESHOLD
+    ]
     ctx.tier1_asin_count = len(tier1)
     ctx.tier1_with_atm   = sum(
-        1 for r in tier1 if _safe_float(r.get('OP_Spend')) > 0  # proxy: OP_Spend present = ATM active
+        1 for r in tier1 if _safe_float(r.get('ATM_Spend')) > 0
     )
     # NEW: count unique parent ASINs across all tiers to detect single-ASIN accounts
     parent_asins = set(
@@ -685,7 +709,16 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
     try:
         import pandas as _pd14
         xl14 = _pd14.ExcelFile(pre_analysis_path, engine='calamine')
-        df14 = xl14.parse('14_Campaign_Performance_by_Adve', header=5)
+        # Detect header row dynamically — same 4-row metadata pattern as other tabs
+        df14_raw = xl14.parse('14_Campaign_Performance_by_Adve', header=None)
+        hdr_row14 = None
+        for idx in range(min(10, len(df14_raw))):
+            if df14_raw.iloc[idx].notna().sum() > 3:
+                hdr_row14 = idx
+                break
+        if hdr_row14 is None:
+            raise ValueError("Tab 14 header not found")
+        df14 = xl14.parse('14_Campaign_Performance_by_Adve', header=hdr_row14)
         df14 = df14.loc[:, ~df14.columns.astype(str).str.match(r'^Unnamed')]
         df14 = df14.dropna(subset=['asin']) if 'asin' in df14.columns else df14
 
@@ -726,12 +759,13 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
                     spt_slow   = df14.loc[is_slow_mover, spt_col].fillna(0).sum()
                     ctx.spt_slow_mover_pct = spt_slow / spt_total if spt_total > 0 else 0.0
 
-            # Tier 100 ASINs with SPT spend — for S031 (no Tier 100 in SPT)
-            if tier_col is not None and spt_col is not None:
-                is_tier100 = df14[tier_col].astype(str).str.upper() == 'TIER 100'
-                has_spt    = df14[spt_col].fillna(0) > 0
+            # Low-velocity ASINs with SPT spend — for S031
+            # Low-velocity = < 3 orders in period (consistent with slow mover definition)
+            if spt_col is not None and orders_col is not None:
+                is_low_velocity = df14[orders_col].fillna(0) < 3
+                has_spt_spend   = df14[spt_col].fillna(0) > 0
                 ctx.tier100_with_spt_asins = list(
-                    df14.loc[is_tier100 & has_spt, 'asin'].astype(str)
+                    df14.loc[is_low_velocity & has_spt_spend, 'asin'].astype(str)
                 )
 
             # ATM + BA overlap on high-velocity ASINs (>80 orders) — for S012/S013
@@ -796,7 +830,15 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
         import pandas as _pd24
         from datetime import datetime as _dt
         xl24 = _pd24.ExcelFile(pre_analysis_path, engine='calamine')
-        df24 = xl24.parse('24_Account_ACoS_Changes_History', header=5)
+        df24_raw = xl24.parse('24_Account_ACoS_Changes_History', header=None)
+        hdr_row24 = None
+        for idx in range(min(10, len(df24_raw))):
+            if df24_raw.iloc[idx].notna().sum() > 3:
+                hdr_row24 = idx
+                break
+        if hdr_row24 is None:
+            raise ValueError("Tab 24 header not found")
+        df24 = xl24.parse('24_Account_ACoS_Changes_History', header=hdr_row24)
         df24 = df24.loc[:, ~df24.columns.astype(str).str.match(r'^Unnamed')]
         if not df24.empty and 'Change_Date' in df24.columns:
             dates = _pd24.to_datetime(df24['Change_Date'], errors='coerce').dropna()
@@ -851,11 +893,19 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
             ctx.op_campaign_count = _subtype_count08('OP',  'OP_')
 
             # Low-order campaign count — for S041
+            # Exclude ATM and WATM — auto campaigns are expected to have low per-campaign orders
             orders_col08 = 'Orders' if 'Orders' in df08.columns else None
             spend_col08  = 'Spend'  if 'Spend'  in df08.columns else None
             if orders_col08:
                 lo = df08[orders_col08].fillna(0)
-                ctx.low_order_campaign_count = int(((lo >= 1) & (lo <= 3)).sum())
+                if sub_col08:
+                    auto_mask = df08[sub_col08].astype(str).str.upper().isin(['ATM', 'WATM'])
+                else:
+                    auto_mask = (
+                        df08['_name_up'].str.startswith('ATM_') |
+                        df08['_name_up'].str.startswith('WATM_')
+                    )
+                ctx.low_order_campaign_count = int(((lo >= 1) & (lo <= 3) & ~auto_mask).sum())
 
             # SPT spend-weighted avg ACoS — for S031
             if sub_col08 and acos_col08 and spend_col08:
@@ -1013,12 +1063,11 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
         pass
 
     # ── tab 08 — portfolio coverage ratio ─────────────────────────────────────
-    # Already read campaign_names above; re-use those records for portfolio count
-    camp_records_08 = _tab_to_records(pa['08_Campaign_Report'])
-    ctx.total_campaign_count = len(camp_records_08)
+    # Reuse camp_records already parsed above — avoids double-reading the tab
+    ctx.total_campaign_count = len(camp_records)
     if ctx.total_campaign_count > 0:
         in_port = sum(
-            1 for r in camp_records_08
+            1 for r in camp_records
             if not _safe_str(r.get('PortfolioName')).startswith('Campaign Not in Portfolio')
             and _safe_str(r.get('PortfolioName'))
         )
@@ -1027,18 +1076,27 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
     # ── tab 12 — branded vs non-branded keyword mix ────────────────────────────
     try:
         search_cat_records = _tab_to_records(pa['12_Search_Terms_by_Category'])
+
+        def _get_ci(rec: dict, key: str):
+            """Case-insensitive dict lookup."""
+            key_l = key.lower()
+            for k, v in rec.items():
+                if str(k).lower() == key_l:
+                    return v
+            return None
+
         for r in search_cat_records:
             cat = _safe_str(r.get('KeywordCategory')).lower().strip()
             if cat == 'branded':
-                ctx.branded_spend_pct  = _safe_float(r.get('Spend_Pct'))
-                ctx.branded_acos       = _safe_float(r.get('acos'))
-                ctx.branded_cpc        = _safe_float(r.get('cpc'))
-            elif cat == 'non branded':
-                ctx.non_branded_spend_pct = _safe_float(r.get('Spend_Pct'))
-                ctx.non_branded_acos      = _safe_float(r.get('acos'))
-                ctx.non_branded_cpc       = _safe_float(r.get('cpc'))
+                ctx.branded_spend_pct  = _safe_float(_get_ci(r, 'Spend_Pct'))
+                ctx.branded_acos       = _safe_float(_get_ci(r, 'acos'))
+                ctx.branded_cpc        = _safe_float(_get_ci(r, 'cpc'))
+            elif cat in ('non branded', 'non-branded', 'nonbranded'):
+                ctx.non_branded_spend_pct = _safe_float(_get_ci(r, 'Spend_Pct'))
+                ctx.non_branded_acos      = _safe_float(_get_ci(r, 'acos'))
+                ctx.non_branded_cpc       = _safe_float(_get_ci(r, 'cpc'))
             elif cat == 'vcpm':
-                ctx.vcpm_spend_pct = _safe_float(r.get('Spend_Pct'))
+                ctx.vcpm_spend_pct = _safe_float(_get_ci(r, 'Spend_Pct'))
     except Exception:
         pass
 
@@ -1097,38 +1155,38 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
 
     # ── tab 04 — L24M monthly trend signals ──────────────────────────────────
     try:
-        import pandas as _pd
-        ws04 = pa['04_L24M_Monthly_Performance_Sum']
-        rows04 = [r for r in ws04.iter_rows(min_row=7, values_only=True) if any(v is not None for v in r)]
-        if rows04:
-            # Build minimal df: col 0 = Month, col 2 = AdSpend, col 3 = TACoS, col 4 = TotalSales
-            months, tacos_vals, spend_vals, sales_vals = [], [], [], []
-            for r in rows04:
-                m = r[0]; tc = r[3]; sp = r[2]; sl = r[1]
-                if m is None:
-                    continue
-                try:
-                    m_ts = _pd.to_datetime(m, errors='coerce')
-                    if _pd.isna(m_ts):
-                        continue
-                except Exception:
-                    continue
-                months.append(m_ts)
-                tacos_vals.append(float(tc) if tc is not None else None)
-                spend_vals.append(float(sp) if sp is not None else None)
-                sales_vals.append(float(sl) if sl is not None else None)
+        import pandas as _pd04
+        xl04 = _pd04.ExcelFile(pre_analysis_path, engine='calamine')
+        # Detect header row dynamically — avoid hardcoded row offsets
+        df04_raw = xl04.parse('04_L24M_Monthly_Performance_Sum', header=None)
+        hdr_row04 = None
+        for idx in range(min(10, len(df04_raw))):
+            if df04_raw.iloc[idx].notna().sum() > 3:
+                hdr_row04 = idx
+                break
+        if hdr_row04 is None:
+            raise ValueError("Tab 04 header not found")
+        df04 = xl04.parse('04_L24M_Monthly_Performance_Sum', header=hdr_row04)
+        df04 = df04.loc[:, ~df04.columns.astype(str).str.match(r'^Unnamed')]
 
-            # Sort by month and take last 3 non-None tacos values
-            paired = sorted(zip(months, tacos_vals, spend_vals, sales_vals), key=lambda x: x[0])
-            valid_tacos = [(t, s, sl) for _, t, s, sl in paired if t is not None]
+        # Confirmed columns: Month, TotalSales, AdSpend, TACoS, AdSales, OrganicSales, ACoS, CPC, CR
+        month_col04 = 'Month'      if 'Month'      in df04.columns else None
+        tacos_col04 = 'TACoS'      if 'TACoS'      in df04.columns else None
+        spend_col04 = 'AdSpend'    if 'AdSpend'    in df04.columns else None
+        sales_col04 = 'TotalSales' if 'TotalSales' in df04.columns else None
+
+        if month_col04 and tacos_col04:
+            df04 = df04.dropna(subset=[month_col04])
+            df04['_month_ts'] = _pd04.to_datetime(df04[month_col04], errors='coerce')
+            df04 = df04.dropna(subset=['_month_ts']).sort_values('_month_ts')
+
+            tacos_series = _pd04.to_numeric(df04[tacos_col04], errors='coerce')
+            valid_tacos  = tacos_series.dropna().tolist()
 
             if len(valid_tacos) >= 3:
-                last3_tacos  = [v[0] for v in valid_tacos[-3:]]
-                last3_spend  = [v[1] for v in valid_tacos[-3:] if v[1] is not None]
-                last3_sales  = [v[2] for v in valid_tacos[-3:] if v[2] is not None]
-
+                last3_tacos = valid_tacos[-3:]
                 ctx.l3m_tacos_avg = sum(last3_tacos) / len(last3_tacos)
-                pp_change = (last3_tacos[-1] - last3_tacos[0]) * 100  # decimal → pp
+                pp_change = (last3_tacos[-1] - last3_tacos[0]) * 100
                 ctx.tacos_trend_pp = round(pp_change, 2)
 
                 if pp_change > 1.5:
@@ -1138,12 +1196,15 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
                 else:
                     ctx.tacos_trend = 'stable'
 
-                if len(last3_spend) >= 2 and last3_spend[-2] > 0:
-                    ctx.mom_spend_change = (last3_spend[-1] - last3_spend[-2]) / last3_spend[-2]
-                if len(last3_sales) >= 2 and last3_sales[-2] > 0:
-                    ctx.mom_sales_change = (last3_sales[-1] - last3_sales[-2]) / last3_sales[-2]
+                if spend_col04:
+                    spend_vals = _pd04.to_numeric(df04[spend_col04], errors='coerce').dropna().tolist()
+                    if len(spend_vals) >= 2 and spend_vals[-2] > 0:
+                        ctx.mom_spend_change = (spend_vals[-1] - spend_vals[-2]) / spend_vals[-2]
 
-            # VCPM spend share from tab 12 (already parsed above — read from search_cat_records if available)
+                if sales_col04:
+                    sales_vals = _pd04.to_numeric(df04[sales_col04], errors='coerce').dropna().tolist()
+                    if len(sales_vals) >= 2 and sales_vals[-2] > 0:
+                        ctx.mom_sales_change = (sales_vals[-1] - sales_vals[-2]) / sales_vals[-2]
     except Exception:
         pass
 
