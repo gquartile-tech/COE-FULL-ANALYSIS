@@ -387,8 +387,7 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
             flag('S033', 'PARTIAL')
 
     # S034 — Best-Seller Campaigns Paused
-    if ctx.tier1_asin_count > 0 and at_scale and ctx.top_seller_type_gaps > 0:
-        flag('S034', 'FLAG')
+    # MANUAL — requires human review of which top-seller campaigns are paused and why.
 
     # ── CAMPAIGNS STRATEGY ────────────────────────────────────────────────────
 
@@ -1111,8 +1110,7 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
         texts['S053'] = (
             f'The worst SP campaign has an ACoS of {ctx.sp_worst_campaign_acos:.0%} '
             f'vs the {ctx.acos_constraint:.0f}% constraint. '
-            f'{ctx.sp_campaigns_above_threshold} SP campaign(s) are above the threshold.{extra} '
-            f'Review these campaigns and reduce bids or tighten targeting to bring ACoS in line.'
+            f'{ctx.sp_campaigns_above_threshold} SP campaign(s) are above the threshold.{extra}'
         )
 
     # S054 — SB Campaign ACoS Significantly Above Constraint
@@ -1121,8 +1119,7 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
         texts['S054'] = (
             f'The worst SB campaign has an ACoS of {ctx.sb_worst_campaign_acos:.0%} '
             f'vs the {ctx.acos_constraint:.0f}% constraint. '
-            f'{ctx.sb_campaigns_above_threshold} SB campaign(s) are above the threshold.{extra} '
-            f'Review these campaigns and reduce bids or narrow audience/keyword targeting. Do not pause — adjust scope first.'
+            f'{ctx.sb_campaigns_above_threshold} SB campaign(s) are above the threshold.{extra}'
         )
 
     # S055 — SD Campaign ACoS Significantly Above Constraint
@@ -1131,8 +1128,7 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
         texts['S055'] = (
             f'The worst SD campaign has an ACoS of {ctx.sd_worst_campaign_acos:.0%} '
             f'vs the {ctx.acos_constraint:.0f}% constraint. '
-            f'{ctx.sd_campaigns_above_threshold} SD campaign(s) are above the threshold.{extra} '
-            f'Review these campaigns and reduce bids or tighten audience targeting. Do not pause — adjust targeting scope first.'
+            f'{ctx.sd_campaigns_above_threshold} SD campaign(s) are above the threshold.{extra}'
         )
 
     if _t('S056') and 'S036' not in flags:
@@ -1571,23 +1567,20 @@ def _build_what_you_should_do(ctx: StrategyContext, flags: dict[str, str]) -> di
 
     if _t('S053'):
         how['S053'] = (
-            'Review the SP campaigns listed above. Start with the highest ACoS campaign. '
-            'Reduce bids, tighten match types, or add negatives. '
-            'Do not pause — adjust targeting scope first and monitor for 7 days.'
+            'Revisit the SP campaigns listed above. '
+            'These campaigns are running above the agreed ACoS constraint and need a CSM review.'
         )
 
     if _t('S054'):
         how['S054'] = (
-            'Review the SB campaigns listed above. Start with the highest ACoS campaign. '
-            'Reduce bids or narrow audience and keyword targeting. '
-            'Do not pause — adjust scope first and monitor for 7 days.'
+            'Revisit the SB campaigns listed above. '
+            'These campaigns are running above the agreed ACoS constraint and need a CSM review.'
         )
 
     if _t('S055'):
         how['S055'] = (
-            'Review the SD campaigns listed above. Start with the highest ACoS campaign. '
-            'Reduce bids or tighten audience targeting. '
-            'Do not pause — adjust targeting scope first and monitor for 7 days.'
+            'Revisit the SD campaigns listed above. '
+            'These campaigns are running above the agreed ACoS constraint and need a CSM review.'
         )
 
     if _t('S109'):
