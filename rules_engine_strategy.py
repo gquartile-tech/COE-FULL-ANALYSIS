@@ -75,15 +75,17 @@ from reader_databricks_strategy import StrategyContext
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
-def evaluate_strategy(ctx: StrategyContext) -> tuple[dict[str, str], dict[str, str]]:
+def evaluate_strategy(ctx: StrategyContext) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
     """
-    Returns (flags, what_we_saw).
-      flags       : {sid: 'FLAG'|'PARTIAL'} — controls that fired
-      what_we_saw : {sid: plain-english text} — for every fired control
+    Returns (flags, what_we_saw, what_you_should_do).
+      flags              : {sid: 'FLAG'|'PARTIAL'} — controls that fired
+      what_we_saw        : {sid: plain-english text} — for every fired control
+      what_you_should_do : {sid: actionable text} — for scoped controls only
     """
     flags = _compute_flags(ctx)
     texts = _build_what_we_saw(ctx, flags)
-    return flags, texts
+    how   = _build_what_you_should_do(ctx, flags)
+    return flags, texts, how
 
 
 def calculate_grade(flags: dict[str, str]) -> tuple[str, str]:
@@ -219,9 +221,8 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     if at_scale and 0.50 <= ctx.campaigns_in_portfolio_pct < 0.80 and ctx.total_campaign_count > 5:
         flag('S005', 'PARTIAL')
 
-    # S006 — ACoS being loosened while performance is below target
-    if ctx.acos_direction == 'increasing' and (above_acos or declining_yoy):
-        flag('S006', 'FLAG')
+    # S006 — ACoS Target Loosening Risk
+    # MANUAL — recommends ACoS target changes specific to the account. CSM reviews.
 
     # S007 — Branded vs Non-Branded ACoS imbalance
     if (ctx.branded_acos > 0
@@ -231,11 +232,8 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
             and ctx.branded_spend_pct >= 0.25):
         flag('S007', 'FLAG')
 
-    # S008 — OOB + ACoS not being reduced
-    if ctx.has_oob and ctx.acos_direction != 'decreasing' and above_acos:
-        flag('S008', 'FLAG')
-    elif ctx.has_oob and ctx.acos_direction == 'decreasing' and above_acos:
-        flag('S008', 'PARTIAL')
+    # S008 — OOB ACoS Reduction to Ease Pressure
+    # MANUAL — recommends account-specific ACoS reduction. CSM reviews.
 
     # ── OVERALL STRUCTURE ─────────────────────────────────────────────────────
 
@@ -269,9 +267,11 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
         elif ctx.slow_movers_with_ba > 0:
             flag('S011', 'PARTIAL')
 
-    # S012 — ATM+BA overlap with CPC pressure. Fires regardless of bulk methodology
-    # because the cost signal (CPC > $1.20) is what makes the overlap a real problem.
-    if ctx.atm_ba_overlap_count > 0 and ctx.cpc_current > 1.20:
+    # S012 — ATM+BA overlap with CPC pressure.
+    # Suppressed when no_atm_qualifying — if no ASIN qualifies for ATM, the overlap
+    # is a structural issue already owned by S011. S012 only fires when a real ATM-qualifying
+    # ASIN exists but is also covered by BA AND CPC pressure is evident.
+    if not no_atm_qualifying and ctx.atm_ba_overlap_count > 0 and ctx.cpc_current > 1.20:
         flag('S012', 'FLAG')
 
     # S013 — ATM+BA overlap (general). Suppressed on bulk accounts — overlap is expected
@@ -320,35 +320,25 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
 
     # ── OVERALL PARAMETERS AND KPIs ───────────────────────────────────────────
 
-    # S019 — CPC increase YoY
-    if ctx.cpc_yoy_change_pct > 0.20 and above_acos:
-        flag('S019', 'FLAG')
-    elif ctx.cpc_yoy_change_pct > 0.20 and not growing_yoy:
-        flag('S019', 'PARTIAL')
-    elif ctx.cpc_yoy_change_pct > 0.10 and above_acos:
-        flag('S019', 'PARTIAL')
-
-    # S020 — TACoS increasing trend
+    # S020 — TACoS increasing trend — evaluated FIRST so S019 can check if it fired
     if tacos_rising and ctx.tacos_trend_pp > 0.70 and above_tacos and ctx.total_spend >= 1000:
         flag('S020', 'FLAG')
     elif tacos_rising and ctx.tacos_trend_pp > 0.70 and ctx.total_spend >= 1000:
         flag('S020', 'PARTIAL')
 
+    # S019 — CPC increase YoY
+    # Suppressed when S020 (TACoS trend) already fires — S020 is the stronger signal.
+    # CPC pressure is implicit in a rising TACoS — no need to flag both independently.
+    if 'S020' not in flags:
+        if ctx.cpc_yoy_change_pct > 0.20 and above_acos:
+            flag('S019', 'FLAG')
+        elif ctx.cpc_yoy_change_pct > 0.20 and not growing_yoy:
+            flag('S019', 'PARTIAL')
+        elif ctx.cpc_yoy_change_pct > 0.10 and above_acos:
+            flag('S019', 'PARTIAL')
+
     # S021 — OOB — Budget Expansion Priority
-    # Three distinct cases:
-    #   FLAG (inefficient): OOB AND account is above ACoS or TACoS constraint — fix efficiency first
-    #   FLAG (efficient):   OOB AND account is clean — negotiate higher budget with client
-    #   PARTIAL:            OOB AND sales declining MoM but no efficiency problem
-    if ctx.has_oob:
-        if above_acos or above_tacos:
-            flag('S021', 'FLAG')
-            ctx._oob_case = 'inefficient'   # used by what_we_saw
-        else:
-            flag('S021', 'FLAG')
-            ctx._oob_case = 'efficient'
-    elif ctx.has_oob and ctx.mom_sales_change < 0:
-        flag('S021', 'PARTIAL')
-        ctx._oob_case = 'declining'
+    # MANUAL — recommends budget increase or efficiency action specific to the account. CSM reviews.
 
     # S022 — TACoS at risk level (absolute)
     if ctx.tacos_actual > 0.50:
@@ -697,12 +687,8 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     # ── GOVERNANCE ON FRAMEWORK ───────────────────────────────────────────────
 
     # S097 — Portfolio Governance — Unused Portfolios
-    # CHANGELOG: gate changed to >15% of campaigns in portfolios
-    using_portfolios = ctx.campaigns_in_portfolio_pct > 0.15
-    if using_portfolios and ctx.portfolio_count > 3 and ctx.portfolios_with_budget_cap == 0:
-        flag('S097', 'FLAG')
-    elif using_portfolios and ctx.portfolio_count > 0 and ctx.managed_portfolio_count == 0:
-        flag('S097', 'PARTIAL')
+    # MANUAL — portfolio governance requires human review of naming and structure.
+    # Do not auto-flag. CSM reviews this manually during QR call.
 
     # S098 — Campaign-Level ACoS Overrides Active
     if ctx.has_campaign_acos_overrides and above_acos:
@@ -1499,3 +1485,122 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
         )
 
     return texts
+
+
+def _build_what_you_should_do(ctx: StrategyContext, flags: dict[str, str]) -> dict[str, str]:
+    """
+    Builds dynamic 'What You Should Do' text for controls where we defined
+    specific actionable instructions. Only covers controls explicitly scoped:
+    S010, S011, S012, S014, S021, S053, S054, S055, S109.
+    All other controls keep their static template text.
+    """
+    how: dict[str, str] = {}
+    _t = lambda sid: sid in flags
+
+    if _t('S010'):
+        how['S010'] = (
+            'Review the ASIN list above. Move slow-moving ASINs out of BA campaigns. '
+            'Place them in WATM instead. Keep BA spend focused on mid-velocity ASINs only. '
+            'Top sellers should have dedicated ATM campaigns, not shared BA coverage.'
+        )
+
+    if _t('S011'):
+        how['S011'] = (
+            'This account runs on bulk methodology — no ASIN qualifies for ATM yet. '
+            'Structure should be BA for mid-velocity ASINs and WATM for automatic targets. '
+            'Do not build individual ATM product campaigns until at least one ASIN reaches 1.5 orders per day. '
+            'Review which ASINs are in BA and confirm they have enough velocity to justify individual spend.'
+        )
+
+    if _t('S012'):
+        how['S012'] = (
+            'Review BA campaigns that overlap with ATM on the same ASIN. '
+            'CPC is above $1.20 — the overlap is inflating auction costs. '
+            'Consolidate targeting: keep ATM for top sellers and remove BA coverage on those same ASINs. '
+            'Reducing overlap will lower CPC pressure across the account.'
+        )
+
+    if _t('S014'):
+        has_watm_or_catchall = ctx.watm_campaign_count > 0 or ctx.has_catchall
+        if ctx.pct_bak == 0:
+            how['S014'] = (
+                'BA campaigns are active but no BAK harvest layer exists. '
+                'Pull the search term report from BA campaigns and identify converting terms. '
+                'Create BAK campaigns with exact and phrase match on those terms. '
+                'Target BAK spend at 10–15% of BA spend as a starting point.'
+            )
+        elif ctx.pct_bak > 0 and ctx.pct_bak < ctx.pct_ba * 0.10:
+            how['S014'] = (
+                'BAK exists but is severely underfed relative to BA. '
+                'Review BA search term report and add more converting terms to BAK. '
+                'Increase BAK budgets — target at least 10% of BA spend in the harvest layer.'
+            )
+        else:
+            gaps = []
+            if not ctx.has_cat_sp:
+                gaps.append('add CAT_SP campaigns for product-targeting discovery')
+            if not has_watm_or_catchall:
+                gaps.append('add WATM campaigns for slow mover coverage')
+            if ctx.spend_spt == 0:
+                gaps.append('add SPT campaigns for defensive own-page coverage')
+            how['S014'] = (
+                f'Bulk structure gaps identified: {"; ".join(gaps)}. '
+                f'Complete the full bulk structure before expanding to advanced campaign types.'
+            )
+
+    if _t('S021'):
+        oob_case = getattr(ctx, '_oob_case', 'inefficient')
+        if oob_case == 'efficient':
+            how['S021'] = (
+                'The account is clean and hitting budget limits. '
+                'This is the right time to negotiate a budget increase with the client. '
+                'Present the efficiency data (ACoS vs constraint) as justification.'
+            )
+        elif oob_case == 'inefficient':
+            how['S021'] = (
+                'Fix efficiency before requesting more budget. '
+                'Reduce the ACoS target to lower CPC pressure and reduce out-of-budget events. '
+                'Once ACoS is within constraint, revisit budget expansion with the client.'
+            )
+        else:
+            how['S021'] = (
+                'Review spend allocation before increasing budget. '
+                'Sales are declining despite full budget utilisation — more budget will not fix the problem. '
+                'Identify which campaigns are spending without delivering sales and reduce their scope first.'
+            )
+
+    if _t('S053'):
+        how['S053'] = (
+            'Review the SP campaigns listed above. Start with the highest ACoS campaign. '
+            'Reduce bids, tighten match types, or add negatives. '
+            'Do not pause — adjust targeting scope first and monitor for 7 days.'
+        )
+
+    if _t('S054'):
+        how['S054'] = (
+            'Review the SB campaigns listed above. Start with the highest ACoS campaign. '
+            'Reduce bids or narrow audience and keyword targeting. '
+            'Do not pause — adjust scope first and monitor for 7 days.'
+        )
+
+    if _t('S055'):
+        how['S055'] = (
+            'Review the SD campaigns listed above. Start with the highest ACoS campaign. '
+            'Reduce bids or tighten audience targeting. '
+            'Do not pause — adjust targeting scope first and monitor for 7 days.'
+        )
+
+    if _t('S109'):
+        asin_names = getattr(ctx, 'inefficient_asin_names', [])
+        shown      = asin_names[:3]
+        more       = ctx.inefficient_asin_count - len(shown)
+        asin_str   = ', '.join(shown) if shown else 'the ASINs listed'
+        more_str   = f' (+{more} more)' if more > 0 else ''
+        how['S109'] = (
+            f'Reduce or pause spend on {asin_str}{more_str}. '
+            f'Start with the highest-spend ASIN that has zero sales. '
+            f'Reallocate that budget to top-performing ASINs. '
+            f'Review each flagged ASIN for PDP issues, pricing, or review count before resuming spend.'
+        )
+
+    return how

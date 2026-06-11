@@ -1652,7 +1652,7 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str) 
     pa.close()
 
     # ── compute auto-flags ───────────────────────────────────────────────────
-    flags, dynamic_what = evaluate_strategy(ctx)
+    flags, dynamic_what, dynamic_how = evaluate_strategy(ctx)
     grade, interp = calculate_grade(flags)
 
     # ── load template ────────────────────────────────────────────────────────
@@ -1746,6 +1746,7 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str) 
     # Col 5  (E) = Auto Review (AUTO/MANUAL — static in template, not overwritten)
     # Col 6  (F) = STATUS written by agent: FLAG / PARTIAL / OK
     # Col 10 (J) = What We Saw — dynamic text built from real account numbers
+    # Col 12 (L) = What You Should Do — dynamic text for scoped controls only
     # ════════════════════════════════════════════════════════════════════════════
     ws_ov = wb['New Strategy Overview']
 
@@ -1765,6 +1766,12 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str) 
         row_num = _SID_TO_ROW.get(sid)
         if row_num:
             ws_ov.cell(row=row_num, column=10, value=text)
+
+    # Write What You Should Do (col 12 = L) — scoped controls only
+    for sid, text in dynamic_how.items():
+        row_num = _SID_TO_ROW.get(sid)
+        if row_num:
+            ws_ov.cell(row=row_num, column=12, value=text)
 
     # ════════════════════════════════════════════════════════════════════════════
     # TAB — Account Strategy _Analysis
