@@ -340,14 +340,16 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     # S021 — OOB — Budget Expansion Priority
     # MANUAL — recommends budget increase or efficiency action specific to the account. CSM reviews.
 
-    # S022 — TACoS at risk level (absolute)
-    if ctx.tacos_actual > 0.50:
+    # S022 — TACoS at risk level
+    # Only fires when TACoS is rising — a high but stable TACoS is a known state, not an action item
+    if ctx.tacos_actual > 0.50 and tacos_rising:
         flag('S022', 'FLAG')
-    elif ctx.tacos_actual > 0.30:
+    elif ctx.tacos_actual > 0.30 and tacos_rising:
         flag('S022', 'PARTIAL')
 
     # S023 — Catalogue activation scope
-    if ctx.catalog_asin_count >= 10:
+    # Suppressed when account is intentionally concentrated on top sellers
+    if ctx.catalog_asin_count >= 10 and not high_concentration:
         coverage = ctx.spending_asin_count / ctx.catalog_asin_count
         if coverage < 0.10:
             flag('S023', 'FLAG')
@@ -362,9 +364,11 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     # ── BASIC STRATEGY ────────────────────────────────────────────────────────
 
     # S030 — Non-Quartile spend review
-    if non_qt_total > 0.40 or (non_qt_total > 0.20 and above_acos_10):
+    # Framework pillar owns structural presence of non-QT spend.
+    # Strategy only flags when non-QT is actively hurting performance.
+    if non_qt_total > 0.40 and above_acos and declining_yoy:
         flag('S030', 'FLAG')
-    elif non_qt_total > 0.20:
+    elif non_qt_total > 0.40 and (above_acos or declining_yoy):
         flag('S030', 'PARTIAL')
 
     # S031 — SPT defensive structure review
@@ -424,13 +428,15 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
             flag('S038', 'PARTIAL')
 
     # S039 — BA not segmented by category
-    # CHANGELOG: also flag when only 1 BA campaign AND multiple categories each >10% of total sales
     cat_with_10pct = getattr(ctx, 'categories_above_10pct', 0)
-    if 0 < ctx.ba_campaign_count < 2 and ctx.total_spend > 1500 and ctx.catalog_asin_count >= 5:
+    # FLAG: fewer than 3 BA campaigns on a large catalogue at scale
+    # FLAG: only 1 BA campaign AND multiple material categories
+    if ctx.ba_campaign_count > 0 and ctx.ba_campaign_count < 3 and ctx.total_spend > 1500 and ctx.catalog_asin_count >= 5:
         flag('S039', 'FLAG')
     elif ctx.ba_campaign_count == 1 and cat_with_10pct > 1 and ctx.total_spend > 1500:
-        # 1 BA but multiple material categories → needs segmentation
         flag('S039', 'FLAG')
+    elif 3 <= ctx.ba_campaign_count < 5 and ctx.catalog_asin_count >= 10 and ctx.total_spend > 1500:
+        flag('S039', 'PARTIAL')
 
     # S041 — Low-order campaign consolidation
     if at_scale and ctx.low_order_campaign_count > 80:
@@ -439,11 +445,10 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
         flag('S041', 'PARTIAL')
 
     # S044 — SB category target expansion
+    # Do not push new SB launches when account is above ACoS constraint
     has_product_targeting_base = (ctx.has_op and ctx.pct_op > 0) or (ctx.has_cat_sp and ctx.total_spend > 500)
-    if base_built and ctx.spend_sb == 0 and has_product_targeting_base:
+    if base_built and ctx.spend_sb == 0 and has_product_targeting_base and not above_acos:
         if declining_yoy:
-            flag('S044', 'FLAG')
-        elif above_acos_10:
             flag('S044', 'PARTIAL')
         else:
             flag('S044', 'FLAG')
@@ -458,7 +463,7 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     # S047 — Import kickoff needed
     if ctx.total_spend > 0 and ctx.pct_imported > 0.30:
         flag('S047', 'FLAG')
-    elif ctx.total_spend > 0 and ctx.pct_imported > 0.15:
+    elif ctx.total_spend > 0 and ctx.pct_imported > 0.20:
         flag('S047', 'PARTIAL')
 
     # ── PERFORMANCE CAMPAIGN ─────────────────────────────────────────────────
@@ -489,25 +494,29 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
             flag('S055', 'PARTIAL')
 
     # S056 — ATM campaigns outperforming (positive suggestion)
-    # Only written if S036 did NOT fire (composite silences individual signals)
-    if atm_outperforming and 'S036' not in flags:
+    # Requires minimum spend to avoid noise from tiny campaign samples
+    _spend_br = ctx.pct_br * ctx.total_spend
+    _spend_ow = ctx.pct_ow * ctx.total_spend
+    _spend_op = ctx.pct_op * ctx.total_spend
+    _spend_ph = getattr(ctx, 'pct_ph', 0.0) * ctx.total_spend
+
+    if atm_outperforming and 'S036' not in flags and ctx.spend_atm >= 200:
         flag('S056', 'FLAG')
 
-    # S057 — Broad Match Campaigns Outperforming (positive suggestion)
-    # Only written if S036 did NOT fire
-    if br_outperforming and 'S036' not in flags:
+    # S057 — Broad Match Campaigns Outperforming
+    if br_outperforming and 'S036' not in flags and _spend_br >= 200:
         flag('S057', 'FLAG')
 
     # S058 — Phrase Match Campaigns Outperforming
-    if ctx.ph_avg_acos > 0 and ctx.acos_actual > 0 and ctx.ph_avg_acos < ctx.acos_actual * 0.80:
+    if ctx.ph_avg_acos > 0 and ctx.acos_actual > 0 and ctx.ph_avg_acos < ctx.acos_actual * 0.80 and _spend_ph >= 200:
         flag('S058', 'FLAG')
 
     # S059 — Exact Match Campaigns Outperforming
-    if ctx.ow_avg_acos > 0 and ctx.acos_actual > 0 and ctx.ow_avg_acos < ctx.acos_actual * 0.80:
+    if ctx.ow_avg_acos > 0 and ctx.acos_actual > 0 and ctx.ow_avg_acos < ctx.acos_actual * 0.80 and _spend_ow >= 200:
         flag('S059', 'FLAG')
 
     # S060 — Product Targeting Campaigns Outperforming
-    if ctx.op_avg_acos > 0 and ctx.acos_actual > 0 and ctx.op_avg_acos < ctx.acos_actual * 0.80:
+    if ctx.op_avg_acos > 0 and ctx.acos_actual > 0 and ctx.op_avg_acos < ctx.acos_actual * 0.80 and _spend_op >= 200:
         flag('S060', 'FLAG')
 
     # S062 — Paused SB Campaign Rebuild
@@ -586,12 +595,11 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
         flag('S074', 'FLAG')
 
     # S075 — OP Target Expansion Opportunity
-    # op_campaign_count is now populated via CampaignSubType == 'OP' in the reader
-    # Gate on minimum keyword volume AND minimum spend to avoid noise on small accounts
-    kw_total = ctx.br_campaign_count + ctx.ow_campaign_count + ctx.ph_campaign_count
-    if ctx.total_spend >= 1000 and ctx.op_campaign_count < 10 and kw_total > 50:
+    # OP campaigns are product-targeting campaigns. Flag when absent or severely underbuilt.
+    # No relation to keyword volume — remove kw_total gate.
+    if ctx.total_spend >= 1000 and ctx.op_campaign_count == 0:
         flag('S075', 'FLAG')
-    elif ctx.total_spend >= 1000 and ctx.op_campaign_count < 10 and kw_total > 30:
+    elif ctx.total_spend >= 1000 and ctx.op_campaign_count < 3:
         flag('S075', 'PARTIAL')
 
     # S076 — CatchAll Graduation Overdue
@@ -621,9 +629,10 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
         flag('S082', 'PARTIAL')
 
     # S083 — WATM/CatchAll Catalogue Coverage
+    # Only fire when coverage gap is hurting performance — not just when ASINs aren't spending
     if (ctx.watm_campaign_count > 0 or ctx.has_catchall) and ctx.catalog_asin_count >= 8 and ctx.total_spend >= 1000:
         coverage = ctx.spending_asin_count / ctx.catalog_asin_count if ctx.catalog_asin_count > 0 else 1.0
-        if coverage < 0.60:
+        if coverage < 0.60 and (declining_yoy or above_acos):
             flag('S083', 'PARTIAL')
 
     # S084 — WATM and CatchAll active simultaneously
@@ -646,15 +655,15 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
                 flag('S086', 'PARTIAL')
 
     # S087 — CAT_SP high-spend with efficiency pressure
-    if has_constraint and ctx.pct_cat_sp > 0.15 and acos_pp > constraint * 0.50:
+    if has_constraint and ctx.pct_cat_sp > 0.15 and above_acos:
         flag('S087', 'PARTIAL')
 
     # S088 — SB high-spend with efficiency pressure
-    if has_constraint and ctx.pct_sb > 0.15 and acos_pp > constraint * 0.50:
+    if has_constraint and ctx.pct_sb > 0.15 and above_acos:
         flag('S088', 'PARTIAL')
 
     # S089 — SBV high-spend with efficiency pressure
-    if has_constraint and ctx.pct_sbv > 0.15 and acos_pp > constraint * 0.50:
+    if has_constraint and ctx.pct_sbv > 0.15 and above_acos:
         flag('S089', 'PARTIAL')
 
     # ── ADVANCED CAMPAIGNS ────────────────────────────────────────────────────
@@ -747,9 +756,15 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
 
     # S111 — External Traffic Tracking — MANUAL
 
+    # S119 — Subscribe & Save — Not Active — evaluated FIRST so S113 suppression works
+    if not ctx.has_sns_active and not repeat_low and not obj_ntb:
+        if declining_yoy or repeat_high:
+            flag('S119', 'FLAG')
+        else:
+            flag('S119', 'PARTIAL')
+
     # S113 — Recurring Sales Strategy
-    # Suppressed when S119 (Subscribe & Save) already fires — same root cause, S119 is more specific
-    # CHANGELOG: also fires when repeat_purchase is High (regardless of YoY)
+    # Suppressed when S119 already fires — same root cause, S119 is more specific
     if 'S119' not in flags and not ctx.has_sns_active and not repeat_low and not obj_ntb:
         if declining_yoy or repeat_high:
             flag('S113', 'FLAG')
@@ -757,20 +772,11 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
             flag('S113', 'PARTIAL')
 
     # S114 — Sales Declining While Spend Growing
-    if declining_yoy and spend_rising:
+    # Gate on above_acos — declining sales + rising spend is only critical when efficiency is also off
+    if declining_yoy and spend_rising and above_acos:
         flag('S114', 'FLAG')
 
     # ── LISTING OPTIMIZATIONS ─────────────────────────────────────────────────
-
-    # S119 — Subscribe & Save — Not Active
-    # CHANGELOG: also fires when repeat_purchase is High
-    if not ctx.has_sns_active and not repeat_low and not obj_ntb:
-        if declining_yoy or repeat_high:
-            flag('S119', 'FLAG')
-        else:
-            flag('S119', 'PARTIAL')
-
-    # ── PROMO AND GGS ─────────────────────────────────────────────────────────
 
     # S122 — Promo Portfolio Budget Pacing
     has_named_promo_portfolio = any('PROMO' in str(n).upper() for n in ctx.portfolio_names)
@@ -1492,29 +1498,6 @@ def _build_what_you_should_do(ctx: StrategyContext, flags: dict[str, str]) -> di
     """
     how: dict[str, str] = {}
     _t = lambda sid: sid in flags
-
-    if _t('S010'):
-        how['S010'] = (
-            'Review the ASIN list above. Move slow-moving ASINs out of BA campaigns. '
-            'Place them in WATM instead. Keep BA spend focused on mid-velocity ASINs only. '
-            'Top sellers should have dedicated ATM campaigns, not shared BA coverage.'
-        )
-
-    if _t('S011'):
-        how['S011'] = (
-            'This account runs on bulk methodology — no ASIN qualifies for ATM yet. '
-            'Structure should be BA for mid-velocity ASINs and WATM for automatic targets. '
-            'Do not build individual ATM product campaigns until at least one ASIN reaches 1.5 orders per day. '
-            'Review which ASINs are in BA and confirm they have enough velocity to justify individual spend.'
-        )
-
-    if _t('S012'):
-        how['S012'] = (
-            'Review BA campaigns that overlap with ATM on the same ASIN. '
-            'CPC is above $1.20 — the overlap is inflating auction costs. '
-            'Consolidate targeting: keep ATM for top sellers and remove BA coverage on those same ASINs. '
-            'Reducing overlap will lower CPC pressure across the account.'
-        )
 
     if _t('S014'):
         has_watm_or_catchall = ctx.watm_campaign_count > 0 or ctx.has_catchall

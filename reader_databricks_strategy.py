@@ -152,6 +152,7 @@ class StrategyContext:
     pct_sd: float = 0.0
     pct_br: float = 0.0
     pct_ow: float = 0.0
+    pct_ph: float = 0.0
     pct_op: float = 0.0
 
     # absolute spend per type
@@ -255,7 +256,6 @@ class StrategyContext:
     sd_prd_avg_acos: float = 0.0       # avg ACoS of SD_PRD_ campaigns
     sb_avg_acos: float = 0.0           # avg ACoS of SB_ campaigns
     sbv_avg_acos: float = 0.0          # avg ACoS of SBV_ campaigns
-    ow_avg_acos: float = 0.0           # avg ACoS of OW_ (exact match) campaigns
     op_avg_acos: float = 0.0           # avg ACoS of OP_ (product target) campaigns
     op_campaign_count: int = 0         # count of OP_ campaigns
     catchall_orders: float = 0.0       # total orders from CatchAll campaigns
@@ -502,6 +502,7 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
     ctx.pct_sd            = _pct('SD')
     ctx.pct_br            = _pct('BR')
     ctx.pct_ow            = _pct('OW')
+    ctx.pct_ph            = _pct('PH')
     ctx.pct_op            = _pct('OP')
 
     ctx.spend_imported     = _spend('Imported')
