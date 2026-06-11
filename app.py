@@ -192,7 +192,7 @@ def run_strategy(input_path: str) -> dict:
         raise FileNotFoundError(f"Strategy template not found: {tpl}")
 
     ctx = read_strategy_context(input_path)
-    flags, _ = evaluate_strategy(ctx)
+    flags, _, __ = evaluate_strategy(ctx)
     grade, _ = calculate_grade(flags)
 
     result_path = write_strategy(input_path, str(tpl), str(OUTPUT_DIR))
