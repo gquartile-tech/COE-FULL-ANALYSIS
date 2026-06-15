@@ -1020,16 +1020,62 @@ def eval_C031(ctx: DatabricksContext) -> ControlResult:
 
 
 def eval_C032(ctx: DatabricksContext) -> ControlResult:
-    WHY = "HasDisplayPromote enables the system to use display promotion signals. When disabled, the account cannot benefit from display-driven bid boosts."
+    WHY = "HasDisplayPromote enables the system to use display promotion signals. When disabled, the account cannot benefit from display-driven bid boosts. SD VCPM campaigns should always be off, since VCPM bidding is impression-based and harder to attribute and optimize."
+
+    # ---- Sub-check 1: HasDisplayPromote (existing) ----
     sh, df, col, miss = seller_param_row7(ctx, "HasDisplayPromote", "HasDisplayPromote|hasdisplaypromote|has_display_promote", no_data_flag=True)
     if miss:
         return ControlResult(miss.status, miss.what, WHY)
     b = as_bool(df.iloc[0][col])
     if b is None:
         return flag(note_data_missing(sh or expected_tab_label("40_Seller_Parameter_Insights_Da"), "HasDisplayPromote"), WHY)
-    if b is True:
-        return ok("HasDisplayPromote is enabled — correct setting.", WHY)
-    return flag("HasDisplayPromote is disabled — it should be enabled to allow display promotion signals.", WHY)
+
+    display_promote_flag = (b is False)
+
+    # ---- Sub-check 2: SD VCPM campaign enabled — should always be False ----
+    # Lives in the same tab (40_Seller_Parameter_Insights_Da), column EG (header row 6, data row 7).
+    vcpm_col = find_col(df, [
+        "SDVCPMEnabled", "IsSDVCPMEnabled", "HasSDVCPM", "SDVCPMCampaignEnabled",
+        "sd_vcpm_enabled", "is_sd_vcpm_enabled", "has_sd_vcpm", "sd_vcpm_campaign_enabled",
+        "VCPMEnabled", "vcpm_enabled",
+    ])
+    if not vcpm_col:
+        # Positional fallback: column EG = 0-based index 136.
+        if df.shape[1] > 136:
+            vcpm_col = df.columns[136]
+
+    vcpm_b: Optional[bool] = None
+    if vcpm_col:
+        vcpm_b = as_bool(df.iloc[0][vcpm_col])
+
+    vcpm_missing = vcpm_b is None
+    vcpm_flag = (vcpm_b is True)
+
+    # ---- Combine results ----
+    if display_promote_flag and vcpm_flag:
+        return flag(
+            "Two issues found. HasDisplayPromote is disabled — it should be enabled to allow display promotion signals. "
+            "Also, the SD VCPM campaign setting is enabled — it should always be off.",
+            WHY,
+        )
+
+    if display_promote_flag:
+        msg = "HasDisplayPromote is disabled — it should be enabled to allow display promotion signals."
+        if vcpm_missing:
+            msg += f" {note_data_missing(sh or expected_tab_label('40_Seller_Parameter_Insights_Da'), 'SD VCPM campaign setting')}"
+        return flag(msg, WHY)
+
+    if vcpm_flag:
+        return flag("The SD VCPM campaign setting is enabled — it should always be off.", WHY)
+
+    if vcpm_missing:
+        return ok(
+            f"HasDisplayPromote is enabled — correct setting. "
+            f"{note_data_missing(sh or expected_tab_label('40_Seller_Parameter_Insights_Da'), 'SD VCPM campaign setting')}",
+            WHY,
+        )
+
+    return ok("HasDisplayPromote is enabled — correct setting. SD VCPM campaign is off — correct setting.", WHY)
 
 
 def eval_C033(ctx: DatabricksContext) -> ControlResult:
@@ -1481,7 +1527,7 @@ def eval_C044(ctx: DatabricksContext) -> ControlResult:
 
 # ---- C045: SD VCPM Spend Share ----
 def eval_C045(ctx: DatabricksContext) -> ControlResult:
-    WHY = "VCPM spend above 10% of total SD spend shifts budget toward impression-based buying that is harder to attribute and optimize."
+    WHY = "VCPM spend above 5% of total SD spend shifts budget toward impression-based buying that is harder to attribute and optimize."
     sh, df = ds(ctx, "SEARCH_TERMS_BY_CATEGORY", "12_Search_Terms_by_Category")
     if df is None or df.empty:
         return ok("No search terms data found — VCPM spend share check skipped.", WHY)
@@ -1496,10 +1542,10 @@ def eval_C045(ctx: DatabricksContext) -> ControlResult:
     if v is None:
         return ok("VCPM spend share value is missing.", WHY)
     v = _normalize_pct(v)
-    if v > 10.0:
-        return flag(f"VCPM spend share is {v:.1f}% — above the 10% threshold.", WHY)
     if v > 5.0:
-        return partial(f"VCPM spend share is {v:.1f}% — in the 5%–10% caution range.", WHY)
+        return flag(f"VCPM spend share is {v:.1f}% — above the 5% threshold.", WHY)
+    if v > 1.0:
+        return partial(f"VCPM spend share is {v:.1f}% — in the 1%–5% caution range.", WHY)
     return ok(f"VCPM spend share is {v:.1f}% — within the acceptable range.", WHY)
 
 
