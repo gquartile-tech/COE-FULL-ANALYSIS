@@ -71,6 +71,28 @@ class DatabricksContext:
     gap: Optional[int] = None
     last_call: object = None
     prev_call: object = None
+    # ── Tab 55: Salesforce Consolidated (CSP structured fields) ──────────────
+    sf_primary_objective: str = ''
+    sf_primary_objective_context: str = ''
+    sf_near_term: str = ''
+    sf_near_term_conflict: str = ''       # 'Yes', 'No', or '' (not assessed)
+    sf_current_challenges: str = ''
+    sf_primary_spend_kpi: str = ''        # 'ACOS', 'ROAS', 'TACOS', or ''
+    sf_acos_constraint: object = None     # numeric or None
+    sf_tacos_constraint: object = None    # numeric or None
+    sf_daily_target_spend: object = None  # numeric or None
+    sf_target_roas: object = None         # numeric or None
+    sf_sales_concentration: str = ''      # 'Low Concentration' | 'Medium Concentration' | 'High Concentration'
+    # ── CJM stage data (from tab 55 Salesforce Consolidated) ─────────────────
+    cjm_id: str = ''
+    cjm_status: list = None               # [StatusS1..S4] — None-padded to length 4
+    cjm_strategy: list = None             # [StrategyS1..S4]
+    cjm_adoption: list = None             # [AdoptionOrUpsellS1..S4]
+    cjm_intro_date: list = None           # [IntroductionDateS1..S4]
+    cjm_exec_date: list = None            # [ExecutionDateS1..S4]
+    cjm_actual_completion: list = None    # [ActualCompletionDateStage1..S4]
+    cjm_modified_date: object = None
+    cjm_reviewed_date: object = None
 
 
 def clean_text(v) -> str:
@@ -362,6 +384,72 @@ def load_databricks_context(path: str) -> DatabricksContext:
         ctx.proj_j        = _col54('J')
         ctx.proj_k        = _col54('K')
         ctx.proj_cs_notes = clean_text(_col54('T'))
+
+        # --- Tab 55: Salesforce Consolidated — CSP structured fields + CJM stages ---
+        ws55 = _get_ws(wb, '55_Salesforce_Consolidated')
+        if ws55 is not None:
+            df55 = _ws_to_df(ws55)
+            if df55 is not None and not df55.empty:
+                row55 = _latest_row_by_modstamp(df55)
+
+                def _s55(field_name: str) -> str:
+                    """Return a cleaned string value from row55 by column name."""
+                    if field_name in row55.index:
+                        return clean_text(row55[field_name])
+                    # case-insensitive fallback
+                    for col in row55.index:
+                        if str(col).lower() == field_name.lower():
+                            return clean_text(row55[col])
+                    return ''
+
+                def _s55_raw(field_name: str):
+                    """Return raw value from row55 (for dates, numerics)."""
+                    if field_name in row55.index:
+                        v = row55[field_name]
+                        return None if pd.isna(v) else v
+                    for col in row55.index:
+                        if str(col).lower() == field_name.lower():
+                            v = row55[col]
+                            return None if pd.isna(v) else v
+                    return None
+
+                # CSP structured fields
+                ctx.sf_primary_objective       = _s55('Primary_Objective__c')
+                ctx.sf_primary_objective_context = _s55('Primary_Objective_Additional_Context__c')
+                ctx.sf_near_term               = _s55('Near_Term_3_Month_Considerations__c')
+                ctx.sf_near_term_conflict      = _s55('Near_Term_and_Primary_Objective_Conflict__c')
+                ctx.sf_current_challenges      = _s55('Current_Challenges__c')
+                ctx.sf_primary_spend_kpi       = _s55('Primary_Spend_KPI__c').upper()
+                ctx.sf_acos_constraint         = _s55_raw('ACOS_Constraint__c')
+                ctx.sf_tacos_constraint        = _s55_raw('TACOS_Constraint__c')
+                ctx.sf_daily_target_spend      = _s55_raw('daily_target_spend__c')
+                ctx.sf_target_roas             = _s55_raw('Target_ROAS__c')
+                ctx.sf_sales_concentration     = _s55('Sales_Concentration__c')
+
+                # CJM identity and dates
+                ctx.cjm_id            = _s55('Customer_Journey_Map__c')
+                ctx.cjm_modified_date = _s55_raw('cjm_LastModifiedDate__c')  # may not exist
+                ctx.cjm_reviewed_date = _s55_raw('CGM_Last_Reviewed_Date__c')  # may not exist
+
+                # CJM stage data — build lists of length 4 (None for absent stages)
+                ctx.cjm_status     = [_s55(f'StatusS{i}__c') or None for i in range(1, 5)]
+                ctx.cjm_strategy   = [_s55(f'StrategyS{i}__c') or None for i in range(1, 5)]
+                ctx.cjm_adoption   = [_s55(f'AdoptionOrUpsellS{i}__c') or None for i in range(1, 5)]
+                ctx.cjm_intro_date = [_s55_raw(f'IntroductionDateS{i}__c') for i in range(1, 5)]
+                ctx.cjm_exec_date  = [_s55_raw(f'ExecutionDateS{i}__c') for i in range(1, 5)]
+                ctx.cjm_actual_completion = [
+                    _s55_raw(f'ActualCompletionDateStage{i}__c') for i in range(1, 5)
+                ]
+            else:
+                warnings.warn(
+                    f'55_Salesforce_Consolidated_PreA has no data rows for {path}. '
+                    'Salesforce CSP/CJM structured fields will be unavailable.',
+                )
+        else:
+            warnings.warn(
+                f'Sheet starting with 55_Salesforce_Consolidated not found in {path}. '
+                'Salesforce CSP/CJM structured fields will be unavailable.',
+            )
 
     finally:
         try:

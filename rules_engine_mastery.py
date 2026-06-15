@@ -51,6 +51,38 @@ TIME_WORDS = {'q1', 'q2', 'q3', 'q4', 'month', 'monthly', 'weekly', 'this period
 CONFLICT_WORDS = {'but', 'however', 'while', 'tradeoff', 'trade-off', 'contrasting', 'despite', 'volatility', 'elevated', 'balancing'}
 BESTSELLER_WORDS = {'bestseller', 'best seller', 'hero', 'top perf', 'top perf.', 'top', 'winner', 'core', 'priority', 'best-seller'}
 SEGMENTATION_WORDS = {'mid seller', 'mid-seller', 'slow mover', 'slow-mover', 'low perf', 'low perf.', 'mid. perf.', 'high traffic', 'low traffic', 'high conversion', 'low conversion'}
+
+# Positive category / product-type tag vocabulary — used by C012.
+# These are intentional product grouping labels a CSM would apply.
+# Rules:
+#   1. Positive-match only — no "anything not in other sets" logic.
+#   2. No short ambiguous substrings (e.g. 'us', 'ca', 'uk') that appear
+#      inside common words. Geo codes use word-boundary regex instead (see C012).
+#   3. Covers product types, sales tiers, bundles, and explicit segment labels.
+CATEGORY_WORDS = {
+    # Product type groupings
+    'supplement', 'vitamin', 'protein', 'powder', 'capsule', 'gummy', 'softgel', 'liquid',
+    'snack', 'food', 'beverage', 'coffee', 'tea',
+    'skincare', 'haircare', 'bodycare', 'beauty', 'personal care',
+    'tool', 'device', 'equipment', 'gear', 'accessory', 'accessories',
+    'apparel', 'clothing', 'footwear',
+    'kitchen', 'garden', 'outdoor', 'cleaning',
+    'pet', 'baby', 'fitness',
+    'electronics', 'office supplies',
+    # Sales / performance tier labels  (written-out form to avoid substring hits)
+    'tier 1', 'tier 2', 'tier 3', 'tier 4', 'tier 5',
+    'tier1', 'tier2', 'tier3', 'tier4', 'tier5',
+    # Bundle / variant groupings
+    'bundle', 'multipack', 'variety pack', 'starter kit',
+    # Explicit segment labels
+    'private label', 'flagship', 'new launch',
+    'limited edition', 'clearance', 'seasonal',
+    # Generic intentional segment labels
+    'niche', 'cross-sell',
+}
+
+# Short geo codes that must match as whole words (checked separately in C012)
+CATEGORY_GEO_CODES = {'us', 'ca', 'uk', 'eu', 'au'}
 MONTH_ALIASES = {'jan': 1, 'january': 1, 'feb': 2, 'february': 2, 'mar': 3, 'march': 3, 'apr': 4, 'april': 4, 'may': 5, 'jun': 6, 'june': 6, 'jul': 7, 'july': 7, 'aug': 8, 'august': 8, 'sep': 9, 'sept': 9, 'september': 9, 'oct': 10, 'october': 10, 'nov': 11, 'november': 11, 'dec': 12, 'december': 12}
 NEGATIVE_EXCEPTIONS = ['deal', 'deals', 'discount', 'black friday', 'cyber monday', 'prime day', 'holiday']
 PERSONALIZATION_KEYWORDS = {
@@ -243,89 +275,147 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
 
     # -------------------------------------------------------------------------
     # C001 — Objective Clearly Defined
-    # Reads AY7 — the primary objective field.
-    # OK:      has a business outcome word AND at least one number/KPI value OR
-    #          has multiple distinct business outcome signals (2+).
-    # PARTIAL: has a business outcome word but no measurable anchor, OR the
-    #          text is present but relies entirely on tactical campaign actions.
-    # FLAG:    empty, or no business outcome language at all.
+    # Primary source: AY7 narrative (ctx.ay).
+    # Cross-reference: sf_primary_objective from tab 55 (structured CSP field).
+    # OK:      narrative has outcome language + measurable anchor; SF field aligned.
+    # PARTIAL: narrative OK but SF field blank (CSP completeness gap), OR
+    #          narrative absent but SF field has usable content (use SF, note gap).
+    # FLAG:    both sources empty, or neither has valid business outcome language.
     # -------------------------------------------------------------------------
     txt = ctx.ay
+    sf_obj = ctx.sf_primary_objective  # structured CSP field from tab 55
     t_lower = clean_text(txt).lower() if txt else ''
-    if not txt:
-        r['C001'] = ControlResult('FLAG', 'No primary objective is written in the account notes (AY7).', WHY['C001'], SOURCES['C001'])
-    else:
-        has_outcome = has_any(t_lower, BUSINESS_OUTCOME_WORDS)
-        has_number = bool(re.search(r'\d+\s*%|\$\s*\d+|\d+\s*x\b|\d+[kKmM]\b|\bROAS\b|\bACoS\b|\bTACoS\b', txt, re.I))
-        outcome_count = sum(1 for w in BUSINESS_OUTCOME_WORDS if w in t_lower)
-        is_purely_tactical = has_any(t_lower, TACTICAL_ONLY_WORDS) and not has_outcome
+    sf_lower = sf_obj.lower() if sf_obj else ''
+
+    def _score_objective_text(t: str) -> str:
+        """Return 'ok', 'partial', or 'flag' for a given objective text."""
+        tl = t.lower()
+        has_outcome = has_any(tl, BUSINESS_OUTCOME_WORDS)
+        has_number = bool(re.search(r'\d+\s*%|\$\s*\d+|\d+\s*x\b|\d+[kKmM]\b|\bROAS\b|\bACoS\b|\bTACoS\b', t, re.I))
+        outcome_count = sum(1 for w in BUSINESS_OUTCOME_WORDS if w in tl)
+        is_purely_tactical = has_any(tl, TACTICAL_ONLY_WORDS) and not has_outcome
         if is_purely_tactical:
-            r['C001'] = ControlResult('PARTIAL', 'The objective field describes campaign actions, not a business goal. Rewrite it to focus on the business outcome (e.g. growth, profitability, market share).', WHY['C001'], SOURCES['C001'])
-        elif has_outcome and (has_number or outcome_count >= 2):
-            r['C001'] = ControlResult('OK', 'Primary objective is documented and linked to a clear business outcome.', WHY['C001'], SOURCES['C001'])
-        elif has_outcome:
-            r['C001'] = ControlResult('PARTIAL', 'Objective is written, but it is not anchored to a measurable target or specific KPI. Add a number or metric to make it actionable.', WHY['C001'], SOURCES['C001'])
+            return 'partial'
+        if has_outcome and (has_number or outcome_count >= 2):
+            return 'ok'
+        if has_outcome:
+            return 'partial'
+        return 'flag'
+
+    if not txt and not sf_obj:
+        r['C001'] = ControlResult('FLAG', 'No primary objective is written in the account notes (AY7), and the CSP Primary Objective field is also empty.', WHY['C001'], SOURCES['C001'])
+    elif not txt and sf_obj:
+        # AY7 empty but SF has content — use SF, note the narrative gap
+        sf_score = _score_objective_text(sf_obj)
+        if sf_score == 'ok':
+            r['C001'] = ControlResult('PARTIAL', f'AY7 narrative is empty, but the CSP Primary Objective field is documented: "{trim(sf_obj, 180)}". Copy this into AY7 to close the gap.', WHY['C001'], SOURCES['C001'])
         else:
+            r['C001'] = ControlResult('PARTIAL', f'AY7 narrative is empty. The CSP Primary Objective field has content but it is not anchored to a measurable target: "{trim(sf_obj, 180)}". Update both sources.', WHY['C001'], SOURCES['C001'])
+    else:
+        # AY7 has content — evaluate it first
+        score = _score_objective_text(txt)
+        if score == 'flag':
             r['C001'] = ControlResult('FLAG', 'The objective field does not contain a clear business goal. It needs to explain what the account is trying to achieve and why.', WHY['C001'], SOURCES['C001'])
+        elif score == 'partial':
+            if has_any(t_lower, TACTICAL_ONLY_WORDS) and not has_any(t_lower, BUSINESS_OUTCOME_WORDS):
+                r['C001'] = ControlResult('PARTIAL', 'The objective field describes campaign actions, not a business goal. Rewrite it to focus on the business outcome (e.g. growth, profitability, market share).', WHY['C001'], SOURCES['C001'])
+            else:
+                r['C001'] = ControlResult('PARTIAL', 'Objective is written, but it is not anchored to a measurable target or specific KPI. Add a number or metric to make it actionable.', WHY['C001'], SOURCES['C001'])
+        else:
+            # AY7 is OK — cross-check CSP field
+            if not sf_obj:
+                r['C001'] = ControlResult('PARTIAL', f'Objective is documented in AY7 and is clear. However, the CSP Primary Objective field (Salesforce) is empty — the Salesforce record is incomplete.', WHY['C001'], SOURCES['C001'])
+            else:
+                r['C001'] = ControlResult('OK', 'Primary objective is documented and linked to a clear business outcome. CSP field is also populated.', WHY['C001'], SOURCES['C001'])
 
     # -------------------------------------------------------------------------
     # C002 — Objective vs Near-Term Alignment
-    # Reads AM7 — the objective context field.
-    # Timeframe is a hard gate — without it the result cannot be OK.
-    # Requires all 5 dimensions for OK; at least 3 for PARTIAL.
+    # Primary source: AM7 narrative (ctx.am).
+    # Enhancements from tab 55:
+    #   - sf_near_term_conflict: explicit Yes/No field — 6th check, no keyword inference needed.
+    #   - sf_primary_spend_kpi: gates the 'kpi' dimension (structured > keyword).
+    #   - sf_near_term: fallback source if AM7 is empty.
+    # Timeframe is still a hard gate — without it the result cannot be OK.
+    # Requires all dimensions for OK; at least 3 for PARTIAL.
     # -------------------------------------------------------------------------
     txt = ctx.am
-    if not txt:
-        r['C002'] = ControlResult('FLAG', 'The objective context field (AM7) is empty. There is no supporting detail for the primary objective.', WHY['C002'], SOURCES['C002'])
-    else:
-        dims = {
-            'objective':  has_any(txt, OBJECTIVE_WORDS),
-            'kpi':        has_any(txt, KPI_WORDS),
-            'constraint': has_any(txt, CONSTRAINT_WORDS),
-            'context':    len(txt.split()) >= 15,
-            'timeframe':  has_any(txt, TIME_WORDS),
-        }
-        n = sum(dims.values())
-        missing = [k for k, v in dims.items() if not v]
-        has_timeframe = dims['timeframe']
-        if n == 5:
-            r['C002'] = ControlResult('OK', 'Objective context covers all required elements: goal, KPI, constraint, timeframe, and narrative depth.', WHY['C002'], SOURCES['C002'])
-        elif n >= 3 and has_timeframe:
-            r['C002'] = ControlResult('PARTIAL', f'Objective context is written but some elements are missing: {", ".join(missing)}.', WHY['C002'], SOURCES['C002'])
-        elif n >= 3 and not has_timeframe:
-            r['C002'] = ControlResult('PARTIAL', f'Objective context is written but has no timeframe or near-term reference. Also missing: {", ".join([m for m in missing if m != "timeframe"])}.', WHY['C002'], SOURCES['C002'])
+    sf_near = ctx.sf_near_term
+    sf_conflict = ctx.sf_near_term_conflict.strip() if ctx.sf_near_term_conflict else ''
+    sf_kpi = ctx.sf_primary_spend_kpi  # 'ACOS', 'ROAS', 'TACOS', or ''
+
+    # If AM7 is empty, use sf_near_term as fallback source
+    eval_text = txt if txt else sf_near
+    source_note = '' if txt else ' (from CSP Salesforce field — AY7 narrative is empty)'
+
+    if not eval_text:
+        if sf_conflict in ('Yes', 'No'):
+            r['C002'] = ControlResult('FLAG', f'The objective context field (AM7) is empty and no near-term text is documented in the CSP. However, the Conflict field is set to "{sf_conflict}". Add supporting context to explain the near-term situation.', WHY['C002'], SOURCES['C002'])
         else:
-            r['C002'] = ControlResult('FLAG', f'Objective context does not have enough detail to review near-term alignment. Missing elements: {", ".join(missing)}.', WHY['C002'], SOURCES['C002'])
+            r['C002'] = ControlResult('FLAG', 'The objective context field (AM7) is empty and the CSP Near-Term Considerations field is also blank. There is no supporting detail for the primary objective.', WHY['C002'], SOURCES['C002'])
+    else:
+        # KPI dimension: prefer structured sf_primary_spend_kpi, fall back to keyword match
+        kpi_ok = sf_kpi in ('ACOS', 'ROAS', 'TACOS') or has_any(eval_text, KPI_WORDS)
+        dims = {
+            'objective':  has_any(eval_text, OBJECTIVE_WORDS),
+            'kpi':        kpi_ok,
+            'constraint': has_any(eval_text, CONSTRAINT_WORDS),
+            'context':    len(eval_text.split()) >= 15,
+            'timeframe':  has_any(eval_text, TIME_WORDS),
+        }
+        # 6th check: near-term conflict assessment (structured field)
+        conflict_assessed = sf_conflict in ('Yes', 'No')
+        n = sum(dims.values()) + (1 if conflict_assessed else 0)
+        total_possible = 6
+        missing = [k for k, v in dims.items() if not v]
+        if not conflict_assessed:
+            missing.append('conflict assessment')
+        has_timeframe = dims['timeframe']
+        conflict_note = f' Conflict with primary objective: {sf_conflict}.' if conflict_assessed else ''
+
+        if n == total_possible:
+            r['C002'] = ControlResult('OK', f'Objective context covers all elements: goal, KPI, constraint, timeframe, narrative depth, and conflict assessment.{source_note}{conflict_note}', WHY['C002'], SOURCES['C002'])
+        elif n >= 4 and has_timeframe:
+            r['C002'] = ControlResult('PARTIAL', f'Objective context is written but some elements are missing: {", ".join(missing)}.{source_note}{conflict_note}', WHY['C002'], SOURCES['C002'])
+        elif n >= 3 and not has_timeframe:
+            r['C002'] = ControlResult('PARTIAL', f'Objective context is written but has no timeframe or near-term reference. Also missing: {", ".join([m for m in missing if m != "timeframe"])}.{source_note}{conflict_note}', WHY['C002'], SOURCES['C002'])
+        else:
+            r['C002'] = ControlResult('FLAG', f'Objective context does not have enough detail. Missing elements: {", ".join(missing)}.{source_note}', WHY['C002'], SOURCES['C002'])
 
     # -------------------------------------------------------------------------
     # C003 — Account Challenges Documented
-    # Reads BN7.
-    # FLAG:    empty, OR field contains target/goal content instead of challenges
-    #          (detected when 2+ metric target patterns present but no barrier language).
-    # PARTIAL: content present but shallow — single issue, no specifics, or
-    #          too short to be useful (<12 words and no challenge keywords).
-    # OK:      specific challenges documented with barrier/problem language.
+    # Primary source: BN7 narrative (ctx.bn).
+    # Cross-reference: sf_current_challenges from tab 55 (structured CSP field).
+    # If BN7 is empty but SF has content — evaluate SF text instead of auto-FLAG.
+    # If BN7 is OK but SF is blank — PARTIAL (CSP completeness gap).
     # -------------------------------------------------------------------------
     txt = ctx.bn
-    if not txt:
-        r['C003'] = ControlResult('FLAG', 'No current challenges are documented in the account notes (BN7).', WHY['C003'], SOURCES['C003'])
+    sf_chal = ctx.sf_current_challenges
+
+    eval_text = txt if txt else sf_chal
+    source_note = '' if txt else ' (from CSP Salesforce field — BN7 narrative is empty)'
+
+    if not eval_text:
+        r['C003'] = ControlResult('FLAG', 'No current challenges are documented in the account notes (BN7) or the CSP Salesforce record.', WHY['C003'], SOURCES['C003'])
     else:
-        t_lower = clean_text(txt).lower()
-        # Detect wrong-content: metric targets filling the challenges field
+        t_lower = clean_text(eval_text).lower()
         metric_target_count = len(re.findall(
             r'\b(acos|tacos|roas|spend|sales|revenue)\b.{0,30}(\d+\s*%|\$\s*\d+|\d+\s*x\b)',
             t_lower, re.I
         ))
         has_barrier = has_any(t_lower, CHALLENGE_WORDS)
-        has_specific = len(txt.split()) >= 12 and has_barrier
+        has_specific = len(eval_text.split()) >= 12 and has_barrier
         if metric_target_count >= 2 and not has_barrier:
-            r['C003'] = ControlResult('FLAG', 'The challenges field contains performance targets, not challenges. Replace the content with the actual blockers and issues the account is facing.', WHY['C003'], SOURCES['C003'])
+            r['C003'] = ControlResult('FLAG', f'The challenges field contains performance targets, not challenges. Replace the content with the actual blockers and issues the account is facing.{source_note}', WHY['C003'], SOURCES['C003'])
         elif has_specific:
-            r['C003'] = ControlResult('OK', 'Current challenges are documented with enough detail to understand the active account blockers.', WHY['C003'], SOURCES['C003'])
-        elif len(txt.split()) >= 6:
-            r['C003'] = ControlResult('PARTIAL', 'Challenges are written, but the description is too general. It does not clearly explain what is blocking the account today.', WHY['C003'], SOURCES['C003'])
+            if txt and not sf_chal:
+                # BN7 is OK but CSP field empty
+                r['C003'] = ControlResult('PARTIAL', f'Current challenges are documented with enough detail. However, the CSP Current Challenges field (Salesforce) is empty — the Salesforce record is incomplete.', WHY['C003'], SOURCES['C003'])
+            else:
+                r['C003'] = ControlResult('OK', f'Current challenges are documented with enough detail to understand the active account blockers.{source_note}', WHY['C003'], SOURCES['C003'])
+        elif len(eval_text.split()) >= 6:
+            r['C003'] = ControlResult('PARTIAL', f'Challenges are written, but the description is too general. It does not clearly explain what is blocking the account today.{source_note}', WHY['C003'], SOURCES['C003'])
         else:
-            r['C003'] = ControlResult('FLAG', 'The challenges field has very little content. More detail is needed for a proper review.', WHY['C003'], SOURCES['C003'])
+            r['C003'] = ControlResult('FLAG', f'The challenges field has very little content. More detail is needed for a proper review.{source_note}', WHY['C003'], SOURCES['C003'])
 
     # -------------------------------------------------------------------------
     # C004 — Seasonality Awareness
@@ -413,38 +503,147 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
 
     # -------------------------------------------------------------------------
     # C006 — Client Journey Map
+    # Binary gate: tab 39 H7 (journey_h7) OR cjm_id from tab 55 must be present.
+    # If CJM is found, evaluate 4 sub-check groups from tab 55 stage data:
+    #   Sub-1 (stage count):    ≥3 stages defined
+    #   Sub-2 (status dist.):   exactly 1 In Progress, exactly 1 Next, ≥1 Planned
+    #   Sub-3 (strategy fill):  Strategy field populated for every active stage
+    #   Sub-4 (date logic):     intro date < exec date within each stage;
+    #                           no Next/Planned stages with exec date in the past
+    # 0 sub-checks fail → OK with stage summary
+    # 1–2 fail          → PARTIAL listing issues
+    # 3–4 fail          → FLAG listing all issues
+    # No CJM linked at all → FLAG (same as before)
     # -------------------------------------------------------------------------
-    if ctx.journey_h7:
-        r['C006'] = ControlResult('OK', 'A Client Journey Map is linked to this account.', WHY['C006'], SOURCES['C006'])
-    else:
+    has_cjm = bool(ctx.journey_h7) or bool(ctx.cjm_id)
+
+    if not has_cjm:
         r['C006'] = ControlResult('FLAG', 'No Client Journey Map was found for this account. It needs to be created and linked.', WHY['C006'], SOURCES['C006'])
+    else:
+        # Check whether we have stage data to evaluate
+        cjm_statuses  = ctx.cjm_status or [None, None, None, None]
+        cjm_strategies = ctx.cjm_strategy or [None, None, None, None]
+        cjm_intros    = ctx.cjm_intro_date or [None, None, None, None]
+        cjm_execs     = ctx.cjm_exec_date or [None, None, None, None]
+        cjm_completions = ctx.cjm_actual_completion or [None, None, None, None]
+
+        # Active stages = those with a Status value
+        active_idx = [i for i, s in enumerate(cjm_statuses) if s]
+        stage_count = len(active_idx)
+
+        # If tab 55 has no stage data, fall back to the old binary check
+        if stage_count == 0:
+            r['C006'] = ControlResult('OK', 'A Client Journey Map is linked to this account. Stage detail was not available for deeper evaluation.', WHY['C006'], SOURCES['C006'])
+        else:
+            issues_flag = []
+            issues_partial = []
+
+            # Sub-1: stage count ≥ 3
+            if stage_count < 3:
+                issues_flag.append(f'Only {stage_count} stage(s) defined — minimum 3 required.')
+
+            # Sub-2: status distribution
+            in_prog  = sum(1 for s in cjm_statuses if s == 'In Progress')
+            nxt      = sum(1 for s in cjm_statuses if s == 'Next')
+            planned  = sum(1 for s in cjm_statuses if s == 'Planned')
+            status_issues = []
+            if in_prog != 1:
+                status_issues.append(f'{in_prog} In Progress stage(s) — exactly 1 expected')
+            if nxt != 1:
+                status_issues.append(f'{nxt} Next stage(s) — exactly 1 expected')
+            if planned < 1:
+                status_issues.append('no Planned stage — at least 1 required')
+            if status_issues:
+                issues_flag.append('Status distribution: ' + '; '.join(status_issues) + '.')
+
+            # Sub-3: strategy fields populated for every active stage
+            missing_strategy = [i + 1 for i in active_idx if not cjm_strategies[i]]
+            if missing_strategy:
+                issues_partial.append(f'Strategy field is blank for stage(s): {missing_strategy}.')
+
+            # Sub-4: date logic
+            from datetime import date as _date
+            date_issues = []
+            today = _date.today()
+            for i in active_idx:
+                intro = cjm_intros[i]
+                exec_ = cjm_execs[i]
+                status = cjm_statuses[i]
+                # intro must be before exec date
+                if intro is not None and exec_ is not None:
+                    intro_d = intro.date() if hasattr(intro, 'date') else intro
+                    exec_d  = exec_.date() if hasattr(exec_, 'date') else exec_
+                    try:
+                        if intro_d >= exec_d:
+                            date_issues.append(f'Stage {i+1}: Introduction date ({intro_d}) is not before Completion date ({exec_d}).')
+                    except Exception:
+                        pass
+                # Next/Planned stages should not have a completion date in the past
+                if status in ('Next', 'Planned') and exec_ is not None:
+                    exec_d = exec_.date() if hasattr(exec_, 'date') else exec_
+                    try:
+                        if exec_d < today:
+                            date_issues.append(f'Stage {i+1} ({status}) has a past Completion date ({exec_d}) — update the timeline.')
+                    except Exception:
+                        pass
+            if date_issues:
+                issues_partial.extend(date_issues)
+
+            # Summarise for what_we_saw
+            status_summary = f'{stage_count} stage(s): {in_prog}× In Progress, {nxt}× Next, {planned}× Planned.'
+            all_issues = issues_flag + issues_partial
+            fail_count = len(issues_flag) + len(issues_partial)
+
+            if fail_count == 0:
+                r['C006'] = ControlResult('OK', f'Client Journey Map is complete. {status_summary} Strategy fields and date logic are consistent.', WHY['C006'], SOURCES['C006'])
+            elif len(issues_flag) >= 3 or fail_count >= 3:
+                r['C006'] = ControlResult('FLAG', f'Client Journey Map has multiple issues. {status_summary} Issues: ' + ' | '.join(all_issues), WHY['C006'], SOURCES['C006'])
+            else:
+                r['C006'] = ControlResult('PARTIAL', f'Client Journey Map is linked but has gaps. {status_summary} Issues: ' + ' | '.join(all_issues), WHY['C006'], SOURCES['C006'])
 
     # -------------------------------------------------------------------------
     # C007 — Narrative Consistency
-    # Validates 4 fields: ACoS constraint (O7), TACoS constraint (AX7),
-    # ACoS target (J7), TACoS target (K7).
-    # Missing fields: 1 missing → PARTIAL; 2+ missing → FLAG.
-    # Target vs constraint: any target > its constraint → FLAG regardless of how many fail.
-    # TACoS vs ACoS: TACoS must be strictly lower than ACoS for both the target pair
-    #   and the constraint pair. TACoS >= ACoS → FLAG.
-    #   Skipped silently if either field in the pair is missing (already captured above).
+    # Reads: ACoS constraint (O7), TACoS constraint (AX7), ACoS target (J7), TACoS target (K7).
+    # Enhancement from tab 55:
+    #   - sf_primary_spend_kpi gates which constraint pair is required:
+    #       ACOS/ROAS → ACoS constraint required; TACoS missing is not penalised.
+    #       TACOS     → TACoS constraint required; ACoS missing is not penalised.
+    #       blank     → require both (original behaviour).
+    #   - sf_acos_constraint / sf_tacos_constraint cross-checked against O7 / AX7.
+    #     A material mismatch (>2pp) between tab 55 and tab 38 sources is flagged.
+    # TACoS must be strictly lower than ACoS when both are present.
     # All issues are listed in the what message. Worst-case status wins.
     # -------------------------------------------------------------------------
     acos_c     = norm_pct(ctx.o7)
     tacos_c    = norm_pct(ctx.ax7)
     proj_acos  = norm_pct(ctx.proj_j)
     proj_tacos = norm_pct(ctx.proj_k)
+    sf_kpi     = ctx.sf_primary_spend_kpi  # 'ACOS', 'ROAS', 'TACOS', or ''
+
+    # Determine which constraints are actually required given the primary KPI
+    acos_required  = sf_kpi in ('', 'ACOS', 'ROAS') or sf_kpi == ''
+    tacos_required = sf_kpi in ('', 'TACOS') or sf_kpi == ''
+    if sf_kpi == 'ACOS' or sf_kpi == 'ROAS':
+        tacos_required = False
+    elif sf_kpi == 'TACOS':
+        acos_required = False
+    # sf_kpi blank → require both (original behaviour)
+    if not sf_kpi:
+        acos_required = True
+        tacos_required = True
 
     issues_flag    = []
     issues_partial = []
 
-    # — Missing field checks —
-    field_labels = [
-        (acos_c,     'ACoS constraint (O7)'),
-        (tacos_c,    'TACoS constraint (AX7)'),
-        (proj_acos,  'ACoS target (J7)'),
-        (proj_tacos, 'TACoS target (K7)'),
-    ]
+    # — Missing field checks (gated on KPI relevance) —
+    field_labels = []
+    if acos_required:
+        field_labels.append((acos_c, 'ACoS constraint (O7)'))
+    if tacos_required:
+        field_labels.append((tacos_c, 'TACoS constraint (AX7)'))
+    field_labels.append((proj_acos,  'ACoS target (J7)'))
+    field_labels.append((proj_tacos, 'TACoS target (K7)'))
+
     missing_fields = [label for value, label in field_labels if value is None]
     if len(missing_fields) >= 2:
         issues_flag.append(f'Missing fields: {", ".join(missing_fields)}.')
@@ -463,7 +662,7 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
                 f'TACoS target ({pct_str(proj_tacos)}) is higher than the agreed constraint ({pct_str(tacos_c)}).'
             )
 
-    # — TACoS vs ACoS checks (both pairs, skip silently if either field missing) —
+    # — TACoS vs ACoS ordering (skip if either is missing) —
     if proj_tacos is not None and proj_acos is not None:
         if proj_tacos >= proj_acos - 1e-9:
             issues_flag.append(
@@ -475,39 +674,91 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
                 f'TACoS constraint ({pct_str(tacos_c)}) is not lower than ACoS constraint ({pct_str(acos_c)}). TACoS must always be below ACoS.'
             )
 
+    # — Cross-source mismatch: tab 55 vs tab 38 (>2pp = noteworthy) —
+    sf_acos_c  = norm_pct(ctx.sf_acos_constraint)
+    sf_tacos_c = norm_pct(ctx.sf_tacos_constraint)
+    if sf_acos_c is not None and acos_c is not None:
+        if abs(sf_acos_c - acos_c) > 0.02:
+            issues_partial.append(
+                f'ACoS constraint mismatch: Salesforce CSP says {pct_str(sf_acos_c)} but the project record (O7) shows {pct_str(acos_c)}. Reconcile the two sources.'
+            )
+    if sf_tacos_c is not None and tacos_c is not None:
+        if abs(sf_tacos_c - tacos_c) > 0.02:
+            issues_partial.append(
+                f'TACoS constraint mismatch: Salesforce CSP says {pct_str(sf_tacos_c)} but the project record (AX7) shows {pct_str(tacos_c)}. Reconcile the two sources.'
+            )
+
     # — Resolve status and build message —
+    kpi_note = f' (KPI: {sf_kpi} — only {("ACoS" if not tacos_required else "TACoS" if not acos_required else "both")} constraint(s) required)' if sf_kpi else ''
     all_issues = issues_flag + issues_partial
     if not all_issues:
         what = (
-            f'All four fields are documented and consistent. '
+            f'All documented fields are consistent.{kpi_note} '
             f'ACoS: target {pct_str(proj_acos)} within constraint {pct_str(acos_c)}. '
-            f'TACoS: target {pct_str(proj_tacos)} within constraint {pct_str(tacos_c)}. '
-            f'TACoS is correctly below ACoS across both pairs.'
+            f'TACoS: target {pct_str(proj_tacos)} within constraint {pct_str(tacos_c)}.'
         )
         r['C007'] = ControlResult('OK', what, WHY['C007'], SOURCES['C007'])
     elif issues_flag:
-        what = ' | '.join(all_issues)
+        what = ' | '.join(all_issues) + kpi_note
         r['C007'] = ControlResult('FLAG', what, WHY['C007'], SOURCES['C007'])
     else:
-        what = ' | '.join(all_issues)
+        what = ' | '.join(all_issues) + kpi_note
         r['C007'] = ControlResult('PARTIAL', what, WHY['C007'], SOURCES['C007'])
 
     # -------------------------------------------------------------------------
     # C008 — Sales Concentration Matches Account Story
+    # Primary source: AU7 narrative (ctx.au) — free-text field.
+    # Cross-reference: sf_sales_concentration from tab 55 (structured CSP field).
+    #   SF values: 'Low Concentration' | 'Medium Concentration' | 'High Concentration'
+    #   → normalised to 'low' | 'medium' | 'high' for comparison.
+    # Resolution logic:
+    #   - AU7 populated → classify and compare to actual data.
+    #   - AU7 empty but SF field populated → use SF value directly (no FLAG for missing AU7).
+    #   - Both populated but diverge from each other → note the source mismatch.
+    #   - Both empty → FLAG (not documented anywhere).
     # -------------------------------------------------------------------------
     if ctx.top1 is None:
         r['C008'] = ControlResult('FLAG', 'Sales concentration could not be checked because parent-ASIN sales data was not available.', WHY['C008'], SOURCES['C008'])
     else:
         actual_class = classify_concentration(ctx.top1, ctx.top3, ctx.top5)
-        narr = ctx.au.lower()
-        narr_class = 'high' if 'high' in narr else 'medium' if ('medium' in narr or 'moderate' in narr) else 'low' if ('low' in narr or 'diversified' in narr) else None
         conc_detail = f'Top 1 ASIN: {pct_str(ctx.top1)}, top 3: {pct_str(ctx.top3)}, top 5: {pct_str(ctx.top5)}.'
-        if narr_class == actual_class:
-            r['C008'] = ControlResult('OK', f'Sales concentration is documented as {actual_class} and matches the actual data. {conc_detail}', WHY['C008'], SOURCES['C008'])
-        elif narr_class is None:
-            r['C008'] = ControlResult('FLAG', f'Sales concentration is not documented in AU7. Actual concentration is {actual_class}. {conc_detail}', WHY['C008'], SOURCES['C008'])
+
+        # Classify AU7 narrative
+        narr = ctx.au.lower()
+        narr_class = (
+            'high' if 'high' in narr
+            else 'medium' if ('medium' in narr or 'moderate' in narr)
+            else 'low' if ('low' in narr or 'diversified' in narr)
+            else None
+        )
+
+        # Classify SF structured field (Sales_Concentration__c)
+        sf_raw = ctx.sf_sales_concentration.lower() if ctx.sf_sales_concentration else ''
+        sf_class = (
+            'high' if 'high' in sf_raw
+            else 'medium' if 'medium' in sf_raw
+            else 'low' if 'low' in sf_raw
+            else None
+        )
+
+        # Pick the best documented class (AU7 first, SF fallback)
+        doc_class = narr_class if narr_class is not None else sf_class
+        doc_source = 'AU7' if narr_class is not None else 'CSP Salesforce field'
+
+        # Cross-source consistency note
+        source_conflict = (
+            narr_class is not None and sf_class is not None and narr_class != sf_class
+        )
+
+        if doc_class is None:
+            r['C008'] = ControlResult('FLAG', f'Sales concentration is not documented in AU7 or the CSP record. Actual concentration is {actual_class}. {conc_detail}', WHY['C008'], SOURCES['C008'])
+        elif doc_class == actual_class:
+            if source_conflict:
+                r['C008'] = ControlResult('PARTIAL', f'Sales concentration ({doc_source}) is documented as {doc_class} and matches actual data. However, AU7 says "{narr_class}" and the CSP says "{sf_class}" — reconcile the two sources. {conc_detail}', WHY['C008'], SOURCES['C008'])
+            else:
+                r['C008'] = ControlResult('OK', f'Sales concentration is documented as {doc_class} ({doc_source}) and matches the actual data. {conc_detail}', WHY['C008'], SOURCES['C008'])
         else:
-            r['C008'] = ControlResult('FLAG', f'Sales concentration in the notes says "{narr_class}" but the actual data shows "{actual_class}". {conc_detail} The notes need to be updated.', WHY['C008'], SOURCES['C008'])
+            r['C008'] = ControlResult('FLAG', f'Sales concentration documented as "{doc_class}" ({doc_source}) but actual data shows "{actual_class}". {conc_detail} Update the documentation.', WHY['C008'], SOURCES['C008'])
 
     # -------------------------------------------------------------------------
     # C009 — Client Contact Cadence (last 6 months)
@@ -545,20 +796,41 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
 
     # -------------------------------------------------------------------------
     # C011 — Target Spend / KPI Targets Documented
-    # Only spend deviation is evaluated (KPI targets excluded per design decision).
+    # Sub-check 1 (spend pacing): daily spend target from proj_h (tab 54),
+    #   with sf_daily_target_spend (tab 55) as fallback if proj_h is blank.
+    # Sub-check 2 (ROAS target): sf_target_roas (tab 55) vs actual ROAS from tab 02.
+    #   Tiers: ≤20% deviation OK, ≤40% PARTIAL, else FLAG.
     # -------------------------------------------------------------------------
     checks = []
-    msgs = []
+    msgs   = []
+
+    # Sub-check 1: spend pacing
     daily_target = to_float(ctx.proj_h)
+    target_source = 'project record'
+    if daily_target is None and ctx.sf_daily_target_spend is not None:
+        daily_target = to_float(ctx.sf_daily_target_spend)
+        target_source = 'CSP Salesforce field'
+
     if daily_target is not None and ctx.window_days and ctx.metrics.get('AdSpend') is not None:
         actual_daily = float(ctx.metrics['AdSpend']) / ctx.window_days
         gap = abs(actual_daily - daily_target) / daily_target if daily_target else None
         deviation_pct = f'{gap * 100:.0f}%' if gap is not None else 'unknown'
         direction = 'below' if actual_daily < daily_target else 'above'
         checks.append('OK' if gap is not None and gap <= 0.20 else 'PARTIAL' if gap is not None and gap <= 0.40 else 'FLAG')
-        msgs.append(f'Spend target ${daily_target:.0f}/day vs actual ${actual_daily:.0f}/day ({deviation_pct} {direction} target)')
+        msgs.append(f'Spend target ${daily_target:.0f}/day ({target_source}) vs actual ${actual_daily:.0f}/day ({deviation_pct} {direction} target)')
+
+    # Sub-check 2: ROAS target vs actual
+    sf_target_roas = to_float(ctx.sf_target_roas)
+    actual_roas = ctx.metrics.get('ROAS') if ctx.metrics else None
+    if sf_target_roas is not None and actual_roas is not None and sf_target_roas > 0:
+        roas_gap = abs(actual_roas - sf_target_roas) / sf_target_roas
+        direction_r = 'below' if actual_roas < sf_target_roas else 'above'
+        roas_status = 'OK' if roas_gap <= 0.20 else 'PARTIAL' if roas_gap <= 0.40 else 'FLAG'
+        checks.append(roas_status)
+        msgs.append(f'ROAS target {sf_target_roas:.2f}x vs actual {actual_roas:.2f}x ({roas_gap * 100:.0f}% {direction_r} target)')
+
     if not checks:
-        r['C011'] = ControlResult('OK', 'No spend target is documented in the project dataset. Spend pacing was not evaluated.', WHY['C011'], SOURCES['C011'])
+        r['C011'] = ControlResult('OK', 'No spend or ROAS target is documented. Spend pacing and ROAS alignment were not evaluated.', WHY['C011'], SOURCES['C011'])
     elif all(x == 'OK' for x in checks):
         r['C011'] = ControlResult('OK', f'{" | ".join(msgs)} — within acceptable range.', WHY['C011'], SOURCES['C011'])
     elif 'FLAG' in checks:
@@ -568,24 +840,56 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
 
     # -------------------------------------------------------------------------
     # C012 — Tagging / Segmentation Logic Clear
-    # Requires both a bestseller label and a category/segment label for OK.
-    # PARTIAL: one of the two is missing — message names which one.
-    # FLAG: neither is present.
+    # Requires both a bestseller label AND a category/product-type label for OK.
+    # PARTIAL: one dimension present, one missing.
+    # FLAG: neither present.
+    #
+    # has_category previously used a negative match (anything not in the other
+    # word sets). That caused false positives on filler tags like "test", "Q2",
+    # "new", etc. Replaced with a positive vocabulary (CATEGORY_WORDS) that
+    # covers known intentional grouping patterns — product types, tiers, bundles.
+    # Surface the matched tag values in the finding for transparency.
     # -------------------------------------------------------------------------
     tags = [t.lower() for t in ctx.tags if t]
-    has_best = any(any(w in t for w in BESTSELLER_WORDS) for t in tags)
-    has_category = any(t not in {'', 'none'} and not any(w in t for w in BESTSELLER_WORDS | SEGMENTATION_WORDS) for t in tags)
-    has_segment = any(any(w in t for w in SEGMENTATION_WORDS) for t in tags)
-    has_cat_or_seg = has_category or has_segment
+
+    matched_best = [t for t in tags if any(w in t for w in BESTSELLER_WORDS)]
+    matched_cat  = [t for t in tags if any(w in t for w in CATEGORY_WORDS)
+                    or any(re.search(rf'\b{re.escape(g)}\b', t) for g in CATEGORY_GEO_CODES)]
+    matched_seg  = [t for t in tags if any(w in t for w in SEGMENTATION_WORDS)]
+
+    has_best      = bool(matched_best)
+    has_cat_or_seg = bool(matched_cat) or bool(matched_seg)
+
+    # Build readable tag previews (up to 3 examples each)
+    best_preview = ', '.join(f'"{x}"' for x in matched_best[:3])
+    cat_preview  = ', '.join(f'"{x}"' for x in (matched_cat + matched_seg)[:3])
 
     if has_best and has_cat_or_seg:
-        r['C012'] = ControlResult('OK', 'Campaign tags show clear product segmentation with both a bestseller label and a category or performance tier label identified.', WHY['C012'], SOURCES['C012'])
+        r['C012'] = ControlResult(
+            'OK',
+            f'Campaign tags show clear product segmentation. Bestseller label(s): {best_preview}. Category/tier label(s): {cat_preview}.',
+            WHY['C012'], SOURCES['C012']
+        )
     elif has_best and not has_cat_or_seg:
-        r['C012'] = ControlResult('PARTIAL', 'A bestseller label was found in the campaign tags, but no category or performance tier label was detected. The second tagging dimension is missing.', WHY['C012'], SOURCES['C012'])
+        r['C012'] = ControlResult(
+            'PARTIAL',
+            f'Bestseller label found ({best_preview}), but no category or performance tier label was detected. Add a product-type or tier tag to complete the segmentation.',
+            WHY['C012'], SOURCES['C012']
+        )
     elif has_cat_or_seg and not has_best:
-        r['C012'] = ControlResult('PARTIAL', 'A category or performance tier label was found in the campaign tags, but no bestseller label was detected. The bestseller tagging dimension is missing.', WHY['C012'], SOURCES['C012'])
+        r['C012'] = ControlResult(
+            'PARTIAL',
+            f'Category/tier label found ({cat_preview}), but no bestseller label was detected. Add a hero/winner/core tag to complete the segmentation.',
+            WHY['C012'], SOURCES['C012']
+        )
     else:
-        r['C012'] = ControlResult('FLAG', 'Neither a bestseller label nor a category or performance tier label was found in the campaign tag fields. Both tagging dimensions are missing — the team cannot tell how the portfolio is being prioritized.', WHY['C012'], SOURCES['C012'])
+        total_tags = len(set(tags))
+        tag_note = f' ({total_tags} tag value(s) found but none matched known segmentation patterns).' if total_tags else ' No tag values were found.'
+        r['C012'] = ControlResult(
+            'FLAG',
+            f'Neither a bestseller label nor a category or performance tier label was found in the campaign tags.{tag_note} The team cannot tell how the portfolio is being prioritized.',
+            WHY['C012'], SOURCES['C012']
+        )
 
     # -------------------------------------------------------------------------
     # C013 / C014 — Manual on-call controls

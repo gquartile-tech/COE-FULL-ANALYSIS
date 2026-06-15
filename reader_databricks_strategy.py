@@ -152,7 +152,6 @@ class StrategyContext:
     pct_sd: float = 0.0
     pct_br: float = 0.0
     pct_ow: float = 0.0
-    pct_ph: float = 0.0
     pct_op: float = 0.0
 
     # absolute spend per type
@@ -254,10 +253,15 @@ class StrategyContext:
     sd_flex_avg_acos: float = 0.0      # avg ACoS of SD_FLEX_ campaigns
     sd_audi_avg_acos: float = 0.0      # avg ACoS of SD_AUDI_ campaigns
     sd_prd_avg_acos: float = 0.0       # avg ACoS of SD_PRD_ campaigns
+    sd_flex_vcpm_pct: float = 0.0      # share of SD_FLEX spend on VCPM campaigns
+    sd_audi_vcpm_pct: float = 0.0      # share of SD_AUDI spend on VCPM campaigns
+    sd_prd_vcpm_pct: float = 0.0       # share of SD_PRD spend on VCPM campaigns
     sb_avg_acos: float = 0.0           # avg ACoS of SB_ campaigns
     sbv_avg_acos: float = 0.0          # avg ACoS of SBV_ campaigns
+    ow_avg_acos: float = 0.0           # avg ACoS of OW_ (exact match) campaigns
     op_avg_acos: float = 0.0           # avg ACoS of OP_ (product target) campaigns
     op_campaign_count: int = 0         # count of OP_ campaigns
+    op_campaigns_with_spend: int = 0   # OP campaigns that had spend in the period
     catchall_orders: float = 0.0       # total orders from CatchAll campaigns
     catsp_avg_acos: float = 0.0        # avg ACoS of CAT_SP_ campaigns
 
@@ -499,10 +503,12 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
     ctx.pct_watm          = _pct('WATM')
     ctx.pct_sb            = _pct('SB')
     ctx.pct_sbv           = _pct('SBV')
-    ctx.pct_sd            = _pct('SD')
+    # pct_sd / spend_sd: tab 10 breaks SD into subtypes (SD_AUDI, SD_PRD, SD_FLEX, SD_SPT).
+    # There is no single 'SD' row — sum all SD-prefixed subtypes explicitly.
+    _sd_keys = [k for k in subtype_map if k.startswith('SD')]
+    ctx.pct_sd   = sum(_safe_float(subtype_map[k].get('Perc_Spend')) for k in _sd_keys)
     ctx.pct_br            = _pct('BR')
     ctx.pct_ow            = _pct('OW')
-    ctx.pct_ph            = _pct('PH')
     ctx.pct_op            = _pct('OP')
 
     ctx.spend_imported     = _spend('Imported')
@@ -514,7 +520,7 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
     ctx.spend_watm         = _spend('WATM')
     ctx.spend_sb           = _spend('SB')
     ctx.spend_sbv          = _spend('SBV')
-    ctx.spend_sd           = _spend('SD')
+    ctx.spend_sd           = sum(_safe_float(subtype_map[k].get('Spend')) for k in _sd_keys)
 
     # ── tab 08 — campaign names ───────────────────────────────────────────────
     camp_records = _tab_to_records(pa['08_Campaign_Report'])
@@ -735,38 +741,49 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
             if orders_col:
                 ctx.max_asin_orders_30d = float(df14[orders_col].fillna(0).max())
 
-            # Global slow mover definition: < 3 orders in the period
-            if orders_col:
+            # Global slow mover definition:
+            # Use total orders proxy = TotalSales / AOV when both columns exist.
+            # This prevents ad-only slow movers from being flagged when the ASIN
+            # sells well organically (e.g. 1 ad order but 15 total orders).
+            # Fallback: use ad Orders directly when TotalSales or AOV is missing.
+            has_total_sales = 'TotalSales' in df14.columns
+            has_aov = 'AOV' in df14.columns
+            if orders_col and has_total_sales and has_aov:
+                aov_vals = df14['AOV'].fillna(0).replace(0, float('nan'))
+                est_total_orders = (df14['TotalSales'].fillna(0) / aov_vals).fillna(0)
+                is_slow_mover = est_total_orders < 3
+            elif orders_col:
                 is_slow_mover = df14[orders_col].fillna(0) < 3
+            else:
+                is_slow_mover = pd.Series([False] * len(df14), index=df14.index)
 
-                # Slow movers with BA spend — for S010/S011/S037
-                if ba_col is not None:
-                    has_ba = df14[ba_col].fillna(0) > 0
-                    slow_ba_mask = is_slow_mover & has_ba
-                    ctx.slow_movers_with_ba = int(slow_ba_mask.sum())
-                    ctx.slow_mover_asins_with_ba = list(df14.loc[slow_ba_mask, 'asin'].astype(str))
+            # Slow movers with BA spend — for S010/S011/S037
+            if ba_col is not None:
+                has_ba = df14[ba_col].fillna(0) > 0
+                slow_ba_mask = is_slow_mover & has_ba
+                ctx.slow_movers_with_ba = int(slow_ba_mask.sum())
+                ctx.slow_mover_asins_with_ba = list(df14.loc[slow_ba_mask, 'asin'].astype(str))
 
-                # Slow movers with ATM spend — informational, used in what_we_saw
-                if atm_col is not None:
-                    has_atm = df14[atm_col].fillna(0) > 0
-                    ctx.slow_mover_asins_with_atm = list(
-                        df14.loc[is_slow_mover & has_atm, 'asin'].astype(str)
-                    )
+            # Slow movers with ATM spend — informational, used in what_we_saw
+            if atm_col is not None:
+                has_atm = df14[atm_col].fillna(0) > 0
+                ctx.slow_mover_asins_with_atm = list(
+                    df14.loc[is_slow_mover & has_atm, 'asin'].astype(str)
+                )
 
-                # Slow movers with SPT spend — for S031
-                if spt_col is not None:
-                    has_spt = df14[spt_col].fillna(0) > 0
-                    spt_total  = df14[spt_col].fillna(0).sum()
-                    spt_slow   = df14.loc[is_slow_mover, spt_col].fillna(0).sum()
-                    ctx.spt_slow_mover_pct = spt_slow / spt_total if spt_total > 0 else 0.0
+            # Slow movers with SPT spend — for S031
+            if spt_col is not None:
+                has_spt = df14[spt_col].fillna(0) > 0
+                spt_total  = df14[spt_col].fillna(0).sum()
+                spt_slow   = df14.loc[is_slow_mover, spt_col].fillna(0).sum()
+                ctx.spt_slow_mover_pct = spt_slow / spt_total if spt_total > 0 else 0.0
 
-            # Low-velocity ASINs with SPT spend — for S031
-            # Low-velocity = < 3 orders in period (consistent with slow mover definition)
-            if spt_col is not None and orders_col is not None:
-                is_low_velocity = df14[orders_col].fillna(0) < 3
+            # Low-velocity ASINs with SPT spend — for S032
+            # Uses the same is_slow_mover definition (total orders proxy when available)
+            if spt_col is not None:
                 has_spt_spend   = df14[spt_col].fillna(0) > 0
                 ctx.tier100_with_spt_asins = list(
-                    df14.loc[is_low_velocity & has_spt_spend, 'asin'].astype(str)
+                    df14.loc[is_slow_mover & has_spt_spend, 'asin'].astype(str)
                 )
 
             # ATM + BA overlap on high-velocity ASINs (>80 orders) — for S012/S013
@@ -893,6 +910,14 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
             ctx.ph_campaign_count = _subtype_count08('PH',  'PH_')
             ctx.op_campaign_count = _subtype_count08('OP',  'OP_')
 
+            # OP campaigns with actual spend — for S075
+            # S075 should only fire when OP campaigns with spend exist but are underdeveloped,
+            # not when no OP campaigns exist at all (that's a framework gap, not a strategy one).
+            if sub_col08 and spend_col08:
+                _op_mask = df08[sub_col08].astype(str).str.upper() == 'OP'
+                _op_spend_num = _pd08.to_numeric(df08.get(spend_col08, 0), errors='coerce').fillna(0)
+                ctx.op_campaigns_with_spend = int((_op_mask & (_op_spend_num > 0)).sum())
+
             # Low-order campaign count — for S041
             # Exclude ATM and WATM — auto campaigns are expected to have low per-campaign orders
             orders_col08 = 'Orders' if 'Orders' in df08.columns else None
@@ -970,6 +995,18 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
             ctx.sbv_avg_acos     = _subtype_acos('SBV',     'SBV_')
             ctx.op_avg_acos      = _subtype_acos('OP',      'OP_')
             ctx.catsp_avg_acos   = _subtype_acos('CAT_SP',  'CAT_SP_')
+
+            # VCPM spend share per SD subtype — used by S063/064/065 to suppress
+            # outperforming signals when VCPM campaigns dominate the subtype.
+            # VCPM campaigns use impression-based billing; their ACoS is not comparable.
+            if sub_col08 and spend_col08:
+                spend_num08 = _pd08.to_numeric(df08[spend_col08], errors='coerce').fillna(0)
+                for _sd_sub, _attr in [('SD_FLEX', 'sd_flex_vcpm_pct'), ('SD_AUDI', 'sd_audi_vcpm_pct'), ('SD_PRD', 'sd_prd_vcpm_pct')]:
+                    _sub_mask = df08[sub_col08].astype(str).str.upper() == _sd_sub
+                    _sub_total = spend_num08[_sub_mask].sum()
+                    _vcpm_mask = _sub_mask & df08['_name_up'].str.contains('VCPM', na=False)
+                    _vcpm_spend = spend_num08[_vcpm_mask].sum()
+                    setattr(ctx, _attr, _vcpm_spend / _sub_total if _sub_total > 0 else 0.0)
 
             # CatchAll orders — Non-Quartile rows only, then name pattern
             if orders_col08:

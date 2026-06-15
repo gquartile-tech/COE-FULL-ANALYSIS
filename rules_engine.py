@@ -206,8 +206,74 @@ def _clean_cell_to_str(x) -> str:
 
 
 # =========================================================
-# Portfolio threshold helper
+# Portfolio helpers
 # =========================================================
+def _is_exempt_portfolio(name: str) -> bool:
+    """Returns True for portfolios allowed to carry personalization.
+
+    Exempt rule: name starts with 'SD QT AMZ' AND contains 'Promo' (case-insensitive).
+    """
+    n = _clean_cell_to_str(name).lower()
+    return n.startswith("sd qt amz") and "promo" in n
+
+
+def _portfolio_any_active_check(
+    ctx: DatabricksContext,
+    col_candidates: List[str],
+    condition_label: str,
+    why_text: str,
+) -> ControlResult:
+    """FLAGS if ANY managed, non-exempt portfolio has the setting active.
+
+    Exempt portfolios: names starting with 'SD QT AMZ' AND containing 'Promo'.
+    """
+    sh, df = ds(ctx, "PORTFOLIO_INSIGHTS", "25_Portfolio_Insights_and_Confi")
+    if df is None or df.empty:
+        return ok("No portfolio data found. Nothing to evaluate.", why_text)
+
+    is_managed = find_col(df, ["ismanaged"])
+    if not is_managed:
+        return ok("Portfolio data found but no managed/unmanaged flag detected.", why_text)
+
+    elig = df[df[is_managed].apply(as_bool) == True].copy()  # noqa: E712
+    if elig.empty:
+        return ok("No managed portfolios found. Nothing to evaluate.", why_text)
+
+    name_col = find_col(elig, ["portfolioname", "portfolio_name", "name", "portfolio"])
+    col = find_col(elig, col_candidates)
+    if not col:
+        return ok(f"No {condition_label} column found in portfolio data.", why_text)
+
+    if name_col:
+        non_exempt = elig[~elig[name_col].apply(lambda x: _is_exempt_portfolio(_clean_cell_to_str(x)))].copy()
+    else:
+        non_exempt = elig.copy()
+
+    if non_exempt.empty:
+        return ok("All managed portfolios are exempt — no non-exempt portfolios to evaluate.", why_text)
+
+    active = non_exempt[non_exempt[col].apply(as_bool) == True].copy()  # noqa: E712
+    active_count = len(active)
+
+    if active_count == 0:
+        return ok(f"No non-exempt managed portfolios have {condition_label} enabled.", why_text)
+
+    items = []
+    if name_col:
+        for v in active[name_col].dropna().head(3).tolist():
+            s = _clean_cell_to_str(v)
+            if s:
+                items.append(s)
+
+    if items:
+        suffix = f" (showing first {len(items)} of {active_count})" if active_count > 3 else ""
+        return flag(
+            f"{active_count} non-exempt portfolio(s) have {condition_label} enabled{suffix}: {', '.join(items)}.",
+            why_text,
+        )
+    return flag(f"{active_count} non-exempt portfolio(s) have {condition_label} enabled.", why_text)
+
+
 def _portfolio_threshold_check(
     ctx: DatabricksContext,
     col_candidates: List[str],
@@ -456,9 +522,64 @@ def eval_C008(ctx: DatabricksContext) -> ControlResult:
 
 
 # ---- C009/C010: Negative Keywords ----
+# Full approved negative list — all regions (UK/US + DE/PL/ES/FR/IT/SE/NL/JP translations).
+# Any term that matches one of these (exact or substring) is considered an approved exception.
 _NEGATIVE_EXCEPTIONS = [
-    "deal", "deals", "discount", "black friday",
-    "cyber monday", "prime day", "holiday",
+    # UK/US
+    "deals", "deal", "lightning deal", "todays deal", "deal of the day",
+    "todays deal placement", "deals of the day", "todays deals placement",
+    "today's deals placement", "todays deals", "today's deals", "today's deal",
+    "today's deal placement", "7 day deal", "prime deal", "prime exclusive deal",
+    "black friday deal", "cyber monday deal", "amazon deals", "limited time deals",
+    "warehouse deals", "discount", "black friday", "cyber monday", "prime day", "holiday",
+    # DE
+    "angebote", "handeln", "blitzangebot", "heutiger deal", "heutiges angebot",
+    "angebot des tages", "heutige dealplatzierung", "7-tage-angebot",
+    "erstklassiges angebot", "erstklassiges exklusives angebot",
+    "schwarzer freitag angebot", "cyber-monday-angebot", "amazon angebote",
+    "zeitlich begrenzte angebote", "warenhausgeschäfte", "deals", "deal",
+    "lightning deal", "todays deal", "today's deal", "deal of the day",
+    "todays deal placement", "today's deal placement", "deals of the day",
+    "7 day deal", "prime deal", "prime exclusive deal", "black friday deal",
+    "cyber monday deal", "amazon deals", "limited time deals", "warehouse deals",
+    # PL
+    "oferty", "sprawa", "sprawa błyskawicy", "dzisiejsza oferta",
+    "oferta dnia", "dzisiejsze umieszczenie oferty", "7 dniowa oferta",
+    "najlepsza oferta", "najlepsza ekskluzywna oferta", "oferta na czarny piątek",
+    "cyberponiedziałkowa oferta", "oferty amazon", "oferty ograniczone czasowo",
+    "oferty magazynowe",
+    # ES
+    "ofertas", "acuerdo", "trato relámpago", "trato de hoy", "oferta del día",
+    "ubicación del trato de hoy", "oferta de 7 días", "trato principal",
+    "trato exclusivo principal", "oferta de viernes negro", "oferta de lunes cibernético",
+    "ofertas de amazon", "ofertas por tiempo limitado", "ofertas de almacen",
+    # FR
+    "offres", "accord", "accord éclair", "offre d'aujourd'hui", "l'affaire du jour",
+    "placement de l'offre d'aujourd'hui", "offre de 7 jours", "affaire principale",
+    "accord exclusif", "offre du vendredi noir", "offre du cyber lundi",
+    "offres amazon", "offres à durée limitée", "offres d'entrepôt",
+    # IT
+    "offerte", "affare", "affare fulmineo", "affare di oggi", "affare del giorno",
+    "posizionamento dell'affare di oggi", "posizionamento dell'offerta di oggi",
+    "offerta di 7 giorni", "affare privilegiato", "primo affare esclusivo",
+    "affare del black friday", "affare del cyber lunedì", "offerte amazon",
+    "offerte a tempo limitato", "affari di magazzino",
+    # SE
+    "erbjudanden", "handla", "blixtaffär", "dagens affär", "dagens erbjudande",
+    "dagens dealplacering", "7 dagars erbjudande", "prime deal", "exklusivt erbjudande",
+    "svart fredag-deal", "cyber monday-affär", "amazon-erbjudanden",
+    "tidsbegränsade erbjudanden", "lageraffärer",
+    # NL
+    "aanbiedingen", "overeenkomst", "bliksem deal", "deal van vandaag",
+    "de deal van vandaag", "deal van de dag", "plaatsing van de deal van vandaag",
+    "7 dagen deal", "eersteklas exclusieve deal", "zwarte vrijdag deal",
+    "cyber maandag deal", "amazon aanbiedingen", "tijdelijke aanbiedingen",
+    "magazijndeals",
+    # JP
+    "お得な情報", "対処", "ライトニングディール", "今日の取引", "今日の取引配置",
+    "その日の取引", "7日間の取引", "プライムディール", "プライム独占取引",
+    "ブラックフライデーディール", "サイバーマンデーディール", "アマゾンのお得な情報",
+    "期間限定セール", "倉庫取引",
 ]
 
 
@@ -745,20 +866,22 @@ def eval_C018(ctx: DatabricksContext) -> ControlResult:
     return flag(f"{n} ARIS manual recommendation(s) are pending — these need to be reviewed and acted on.", WHY)
 
 
-# ---- C019/C020/C021: Portfolio threshold controls ----
+# ---- C019/C020/C021: Portfolio personalization controls ----
+# Any active setting on a non-exempt portfolio = FLAG.
+# Exempt portfolios: name starts with "SD QT AMZ" AND contains "Promo".
 def eval_C019(ctx: DatabricksContext) -> ControlResult:
-    WHY = "IsDailyVamBaseline overrides the standard portfolio-level VAM behavior. Having this active on too many portfolios creates inconsistent bid management."
-    return _portfolio_threshold_check(ctx, ["isdailyvambaseline", "IsDailyVamBaseline"], "IsDailyVamBaseline", WHY)
+    WHY = "IsDailyVamBaseline overrides the standard portfolio-level VAM behavior. Any active override on a non-exempt portfolio breaks consistent bid management."
+    return _portfolio_any_active_check(ctx, ["isdailyvambaseline", "IsDailyVamBaseline"], "IsDailyVamBaseline", WHY)
 
 
 def eval_C020(ctx: DatabricksContext) -> ControlResult:
-    WHY = "IsTargetACoS overrides the portfolio-level ACoS governance. High usage across portfolios means the account is being managed with inconsistent efficiency targets."
-    return _portfolio_threshold_check(ctx, ["istargetacos", "IsTargetAcos", "IsTargetACoS"], "IsTargetACoS", WHY)
+    WHY = "IsTargetACoS overrides the portfolio-level ACoS governance. Any active override on a non-exempt portfolio creates inconsistent efficiency targets."
+    return _portfolio_any_active_check(ctx, ["istargetacos", "IsTargetAcos", "IsTargetACoS"], "IsTargetACoS", WHY)
 
 
 def eval_C021(ctx: DatabricksContext) -> ControlResult:
-    WHY = "IsBudgetCap limits portfolio-level budget flexibility. High usage across portfolios can constrain delivery and reduce scaling capacity."
-    return _portfolio_threshold_check(ctx, ["isbudgetcap", "IsBudgetCap"], "IsBudgetCap", WHY)
+    WHY = "IsBudgetCap limits portfolio-level budget flexibility. Any active cap on a non-exempt portfolio can constrain delivery and reduce scaling capacity."
+    return _portfolio_any_active_check(ctx, ["isbudgetcap", "IsBudgetCap"], "IsBudgetCap", WHY)
 
 
 # ---- C022–C033: Seller Params ----
