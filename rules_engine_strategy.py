@@ -1547,62 +1547,11 @@ def _build_what_you_should_do(ctx: StrategyContext, flags: dict[str, str]) -> di
     """
     Builds dynamic 'What You Should Do' text for controls where we defined
     specific actionable instructions. Only covers controls explicitly scoped:
-    S010, S011, S012, S014, S021, S053, S054, S055, S109.
+    S021, S053, S054, S055, S109.
     All other controls keep their static template text.
     """
     how: dict[str, str] = {}
     _t = lambda sid: sid in flags
-
-    if _t('S010'):
-        how['S010'] = (
-            'Review the ASIN list above. Move slow-moving ASINs out of BA campaigns. '
-            'Place them in WATM instead. Keep BA spend focused on mid-velocity ASINs only. '
-            'Top sellers should have dedicated ATM campaigns, not shared BA coverage.'
-        )
-
-    if _t('S011'):
-        how['S011'] = (
-            'This account runs on bulk methodology — no ASIN qualifies for ATM yet. '
-            'Structure should be BA for mid-velocity ASINs and WATM for automatic targets. '
-            'Do not build individual ATM product campaigns until at least one ASIN reaches 1.5 orders per day. '
-            'Review which ASINs are in BA and confirm they have enough velocity to justify individual spend.'
-        )
-
-    if _t('S012'):
-        how['S012'] = (
-            'Review BA campaigns that overlap with ATM on the same ASIN. '
-            'CPC is above $1.20 — the overlap is inflating auction costs. '
-            'Consolidate targeting: keep ATM for top sellers and remove BA coverage on those same ASINs. '
-            'Reducing overlap will lower CPC pressure across the account.'
-        )
-
-    if _t('S014'):
-        has_watm_or_catchall = ctx.watm_campaign_count > 0 or ctx.has_catchall
-        if ctx.pct_bak == 0:
-            how['S014'] = (
-                'BA campaigns are active but no BAK harvest layer exists. '
-                'Pull the search term report from BA campaigns and identify converting terms. '
-                'Create BAK campaigns with exact and phrase match on those terms. '
-                'Target BAK spend at 10–15% of BA spend as a starting point.'
-            )
-        elif ctx.pct_bak > 0 and ctx.pct_bak < ctx.pct_ba * 0.10:
-            how['S014'] = (
-                'BAK exists but is severely underfed relative to BA. '
-                'Review BA search term report and add more converting terms to BAK. '
-                'Increase BAK budgets — target at least 10% of BA spend in the harvest layer.'
-            )
-        else:
-            gaps = []
-            if not ctx.has_cat_sp:
-                gaps.append('add CAT_SP campaigns for product-targeting discovery')
-            if not has_watm_or_catchall:
-                gaps.append('add WATM campaigns for slow mover coverage')
-            if ctx.spend_spt == 0:
-                gaps.append('add SPT campaigns for defensive own-page coverage')
-            how['S014'] = (
-                f'Bulk structure gaps identified: {"; ".join(gaps)}. '
-                f'Complete the full bulk structure before expanding to advanced campaign types.'
-            )
 
     if _t('S021'):
         oob_case = getattr(ctx, '_oob_case', 'inefficient')
