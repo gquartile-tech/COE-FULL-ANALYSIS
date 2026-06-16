@@ -543,13 +543,24 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     if atm_outperforming and 'S036' not in flags:
         flag('S056', 'FLAG')
 
+    # S072 — Broad Match Graduation Signal (BR outperforms OW)
+    # Evaluated early so S058 can suppress when S072 is already active.
+    if (ctx.br_campaign_count > 30 and ctx.ow_campaign_count > 30
+            and ctx.ph_campaign_count < 10
+            and ctx.br_avg_acos > 0 and ctx.ow_avg_acos > 0
+            and ctx.br_avg_acos < ctx.ow_avg_acos):
+        flag('S072', 'FLAG')
+
     # S057 — Broad Match Campaigns Outperforming (positive suggestion)
     # Only written if S036 did NOT fire
     if br_outperforming and 'S036' not in flags:
         flag('S057', 'FLAG')
 
     # S058 — Phrase Match Campaigns Outperforming
-    if ctx.ph_avg_acos > 0 and ctx.acos_actual > 0 and ctx.ph_avg_acos < ctx.acos_actual * 0.80:
+    # Suppressed when S072 is active — S072 already signals that BR outperforms OW,
+    # surfacing a PH signal on top creates conflicting match-type recommendations.
+    if (ctx.ph_avg_acos > 0 and ctx.acos_actual > 0 and ctx.ph_avg_acos < ctx.acos_actual * 0.80
+            and 'S072' not in flags):
         flag('S058', 'FLAG')
 
     # S059 — Exact Match Campaigns Outperforming
@@ -626,13 +637,6 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
             and sb_well_established2 and has_product_targeting_base2
             and product_signal):
         flag('S071', 'FLAG')
-
-    # S072 — Broad Match Graduation Signal (BR outperforms OW)
-    if (ctx.br_campaign_count > 30 and ctx.ow_campaign_count > 30
-            and ctx.ph_campaign_count < 10
-            and ctx.br_avg_acos > 0 and ctx.ow_avg_acos > 0
-            and ctx.br_avg_acos < ctx.ow_avg_acos):
-        flag('S072', 'FLAG')
 
     # S073 — Historical BAK Relaunch — MANUAL
 
@@ -952,6 +956,14 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
             f'{ctx.atm_ba_overlap_count} ASIN(s) have both ATM and BA spend with >80 orders. '
             f'CPC: ${ctx.cpc_current:.2f}. ASINs: {asin_list}. '
             f'ATM already covers these high-velocity ASINs — BA spend is redundant.'
+        )
+
+    if _t('S013'):
+        asin_list = ', '.join(ctx.atm_ba_overlap_asins[:5]) if ctx.atm_ba_overlap_asins else 'see tab 14'
+        texts['S013'] = (
+            f'{ctx.atm_ba_overlap_count} ASIN(s) have both ATM and BA spend. '
+            f'ASINs: {asin_list}. '
+            f'ATM and BA are running on the same ASINs — review whether BA is still needed or can be reduced.'
         )
 
     if _t('S014'):

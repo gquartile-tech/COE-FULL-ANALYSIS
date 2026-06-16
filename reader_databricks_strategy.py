@@ -910,6 +910,10 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
             ctx.ph_campaign_count = _subtype_count08('PH',  'PH_')
             ctx.op_campaign_count = _subtype_count08('OP',  'OP_')
 
+            # Resolve spend and orders columns — used by multiple blocks below
+            orders_col08 = 'Orders' if 'Orders' in df08.columns else None
+            spend_col08  = 'Spend'  if 'Spend'  in df08.columns else None
+
             # OP campaigns with actual spend — for S075
             # S075 should only fire when OP campaigns with spend exist but are underdeveloped,
             # not when no OP campaigns exist at all (that's a framework gap, not a strategy one).
@@ -917,11 +921,6 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
                 _op_mask = df08[sub_col08].astype(str).str.upper() == 'OP'
                 _op_spend_num = _pd08.to_numeric(df08.get(spend_col08, 0), errors='coerce').fillna(0)
                 ctx.op_campaigns_with_spend = int((_op_mask & (_op_spend_num > 0)).sum())
-
-            # Low-order campaign count — for S041
-            # Exclude ATM and WATM — auto campaigns are expected to have low per-campaign orders
-            orders_col08 = 'Orders' if 'Orders' in df08.columns else None
-            spend_col08  = 'Spend'  if 'Spend'  in df08.columns else None
             if orders_col08:
                 lo = df08[orders_col08].fillna(0)
                 if sub_col08:
