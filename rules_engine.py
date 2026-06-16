@@ -24,15 +24,15 @@ def ok(what: str = "", why: str = "") -> ControlResult:
     return ControlResult(cfg.STATUS_OK, what, why)
 
 
-def flag(what: str = "", why: str = "") -> ControlResult:
+def flag(what: str = "", why: str = "", action: str = "") -> ControlResult:
     what = (what or "").strip()
     if not what:
         what = "FLAG triggered — no detail available."
-    return ControlResult(cfg.STATUS_FLAG, what, why)
+    return ControlResult(cfg.STATUS_FLAG, what, why, action)
 
 
-def partial(what: str = "", why: str = "") -> ControlResult:
-    return ControlResult(cfg.STATUS_PARTIAL, what, why)
+def partial(what: str = "", why: str = "", action: str = "") -> ControlResult:
+    return ControlResult(cfg.STATUS_PARTIAL, what, why, action)
 
 
 def expected_tab_label(dataset_key: str) -> str:
@@ -139,6 +139,18 @@ def as_bool(x) -> Optional[bool]:
     return None
 
 
+def _has_value(x) -> bool:
+    """Returns True if the cell contains a meaningful value.
+
+    Used for portfolio columns that store strings like 'Daily' instead of booleans.
+    Treats None, NaN, empty string, and '-' as no value.
+    """
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return False
+    s = str(x).strip()
+    return s not in {"", "-", "nan", "none"}
+
+
 def ds(
     ctx: DatabricksContext,
     dataset_key: str,
@@ -211,10 +223,12 @@ def _clean_cell_to_str(x) -> str:
 def _is_exempt_portfolio(name: str) -> bool:
     """Returns True for portfolios allowed to carry personalization.
 
-    Exempt rule: name starts with 'SD QT AMZ' AND contains 'Promo' (case-insensitive).
+    Exempt rule (either condition is enough, case-insensitive):
+      - Name starts with 'SD QT AMZ' (any variation), OR
+      - Name contains 'Promo'.
     """
     n = _clean_cell_to_str(name).lower()
-    return n.startswith("sd qt amz") and "promo" in n
+    return n.startswith("sd qt amz") or "promo" in n
 
 
 def _portfolio_any_active_check(
@@ -225,7 +239,7 @@ def _portfolio_any_active_check(
 ) -> ControlResult:
     """FLAGS if ANY managed, non-exempt portfolio has the setting active.
 
-    Exempt portfolios: names starting with 'SD QT AMZ' AND containing 'Promo'.
+    Exempt portfolios: name starts with 'SD QT AMZ' OR contains 'Promo' (case-insensitive).
     """
     sh, df = ds(ctx, "PORTFOLIO_INSIGHTS", "25_Portfolio_Insights_and_Confi")
     if df is None or df.empty:
@@ -267,11 +281,12 @@ def _portfolio_any_active_check(
 
     if items:
         suffix = f" (showing first {len(items)} of {active_count})" if active_count > 3 else ""
-        return flag(
-            f"{active_count} non-exempt portfolio(s) have {condition_label} enabled{suffix}: {', '.join(items)}.",
-            why_text,
-        )
-    return flag(f"{active_count} non-exempt portfolio(s) have {condition_label} enabled.", why_text)
+        what = f"{active_count} non-exempt portfolio(s) have {condition_label} enabled{suffix}: {', '.join(items)}."
+        action = f"Revisit personalization on the given Portfolios: {', '.join(items)}."
+        return flag(what, why_text, action)
+    what = f"{active_count} non-exempt portfolio(s) have {condition_label} enabled."
+    action = "Revisit personalization on the given Portfolios."
+    return flag(what, why_text, action)
 
 
 def _portfolio_threshold_check(
@@ -445,17 +460,22 @@ def eval_C006(ctx: DatabricksContext) -> ControlResult:
     n = len(df)
 
     if asin_col and acos_col:
-        items = []
+        display_items = []
+        asin_items = []
         for _, row in df.head(3).iterrows():
             asin = _clean_cell_to_str(row[asin_col])
             acos_val = as_float(row[acos_col])
             if asin and acos_val is not None:
-                items.append(f"{asin} @ {acos_val:.0f}%")
-        if items:
-            suffix = f" (showing first {len(items)} of {n})" if n > 3 else ""
-            return flag(f"{n} product-level ACoS override(s) detected{suffix}: {', '.join(items)}.", WHY)
+                display_items.append(f"{asin} @ {acos_val:.0f}%")
+                asin_items.append(asin)
+        if display_items:
+            suffix = f" (showing first {len(display_items)} of {n})" if n > 3 else ""
+            what = f"{n} product-level ACoS override(s) detected{suffix}: {', '.join(display_items)}."
+            action = f"Revisit personalization on the given ASINs: {', '.join(asin_items)}."
+            return flag(what, WHY, action)
 
-    return flag(f"{n} product-level ACoS override(s) detected. Check tab 34 for details.", WHY)
+    action = "Revisit personalization on the given ASINs — check tab 34 for details."
+    return flag(f"{n} product-level ACoS override(s) detected. Check tab 34 for details.", WHY, action)
 
 
 def eval_C007(ctx: DatabricksContext) -> ControlResult:
@@ -469,17 +489,22 @@ def eval_C007(ctx: DatabricksContext) -> ControlResult:
     n = len(df)
 
     if camp_col and acos_col:
-        items = []
+        display_items = []
+        camp_items = []
         for _, row in df.head(3).iterrows():
             name = _clean_cell_to_str(row[camp_col])
             acos_val = as_float(row[acos_col])
             if name and acos_val is not None:
-                items.append(f"{name} @ {acos_val:.0f}%")
-        if items:
-            suffix = f" (showing first {len(items)} of {n})" if n > 3 else ""
-            return flag(f"{n} campaign-level ACoS override(s) detected{suffix}: {', '.join(items)}.", WHY)
+                display_items.append(f"{name} @ {acos_val:.0f}%")
+                camp_items.append(name)
+        if display_items:
+            suffix = f" (showing first {len(display_items)} of {n})" if n > 3 else ""
+            what = f"{n} campaign-level ACoS override(s) detected{suffix}: {', '.join(display_items)}."
+            action = f"Revisit personalization on the given Campaigns: {', '.join(camp_items)}."
+            return flag(what, WHY, action)
 
-    return flag(f"{n} campaign-level ACoS override(s) detected. Check tab 35 for details.", WHY)
+    action = "Revisit personalization on the given Campaigns — check tab 35 for details."
+    return flag(f"{n} campaign-level ACoS override(s) detected. Check tab 35 for details.", WHY, action)
 
 
 # ---- C008: Timeframe Boost ----
@@ -505,6 +530,7 @@ def eval_C008(ctx: DatabricksContext) -> ControlResult:
         asin_col = find_col(active_rows, ["asin"])
         end_col = find_col(active_rows, ["enddate", "end_date", "EndDate"])
         items = []
+        asin_items = []
         for _, row in active_rows.head(3).iterrows():
             asin = _clean_cell_to_str(row[asin_col]) if asin_col else ""
             end = ""
@@ -514,10 +540,14 @@ def eval_C008(ctx: DatabricksContext) -> ControlResult:
                     end = f" ends {end_val.strftime('%Y-%m-%d')}"
             if asin:
                 items.append(f"{asin}{end}")
+                asin_items.append(asin)
         if items:
             suffix = f" (showing first {len(items)} of {n})" if n > 3 else ""
-            return flag(f"{n} timeframe boost(s) still active{suffix}: {', '.join(items)}.", WHY)
-        return flag(f"{n} timeframe boost row(s) are still active and not marked as expired.", WHY)
+            what = f"{n} timeframe boost(s) still active{suffix}: {', '.join(items)}."
+            action = f"Revisit personalization on the given ASINs: {', '.join(asin_items)}."
+            return flag(what, WHY, action)
+        return flag(f"{n} timeframe boost row(s) are still active and not marked as expired.", WHY,
+                    "Revisit personalization on the given ASINs — check tab 27 for details.")
     return ok("All timeframe boost records are expired. No active boosts detected.", WHY)
 
 
@@ -764,8 +794,11 @@ def eval_C014(ctx: DatabricksContext) -> ControlResult:
                     items.append(s)
         if items:
             suffix = f" (showing first {len(items)} of {n})" if n > 3 else ""
-            return flag(f"{n} unmanaged ASIN(s) are still active{suffix}: {', '.join(items)}.", WHY)
-        return flag(f"{n} unmanaged ASIN row(s) are still active based on end date.", WHY)
+            what = f"{n} unmanaged ASIN(s) are still active{suffix}: {', '.join(items)}."
+            action = f"Revisit personalization on the given ASINs: {', '.join(items)}."
+            return flag(what, WHY, action)
+        return flag(f"{n} unmanaged ASIN row(s) are still active based on end date.", WHY,
+                    "Revisit personalization on the given ASINs — check tab 26 for details.")
     return ok("No active unmanaged ASINs detected — all records are expired or empty.", WHY)
 
 
@@ -793,8 +826,11 @@ def eval_C015(ctx: DatabricksContext) -> ControlResult:
                     items.append(s)
         if items:
             suffix = f" (showing first {len(items)} of {n})" if n > 3 else ""
-            return flag(f"{n} unmanaged product budget(s) still active{suffix}: {', '.join(items)}.", WHY)
-        return flag(f"{n} unmanaged product budget row(s) are still active based on end date.", WHY)
+            what = f"{n} unmanaged product budget(s) still active{suffix}: {', '.join(items)}."
+            action = f"Revisit personalization on the given ASINs: {', '.join(items)}."
+            return flag(what, WHY, action)
+        return flag(f"{n} unmanaged product budget row(s) are still active based on end date.", WHY,
+                    "Revisit personalization on the given ASINs — check tab 28 for details.")
     return ok("No active unmanaged product budgets detected — all records are expired or empty.", WHY)
 
 
@@ -822,8 +858,11 @@ def eval_C016(ctx: DatabricksContext) -> ControlResult:
                     items.append(s)
         if items:
             suffix = f" (showing first {len(items)} of {n})" if n > 3 else ""
-            return flag(f"{n} unmanaged campaign(s) still active{suffix}: {', '.join(items)}.", WHY)
-        return flag(f"{n} unmanaged campaign row(s) are still active based on end date.", WHY)
+            what = f"{n} unmanaged campaign(s) still active{suffix}: {', '.join(items)}."
+            action = f"Revisit personalization on the given Campaigns: {', '.join(items)}."
+            return flag(what, WHY, action)
+        return flag(f"{n} unmanaged campaign row(s) are still active based on end date.", WHY,
+                    "Revisit personalization on the given Campaigns — check tab 31 for details.")
     return ok("No active unmanaged campaigns detected — all records are expired or empty.", WHY)
 
 
@@ -851,8 +890,11 @@ def eval_C017(ctx: DatabricksContext) -> ControlResult:
                     items.append(s)
         if items:
             suffix = f" (showing first {len(items)} of {n})" if n > 3 else ""
-            return flag(f"{n} unmanaged campaign budget(s) still active{suffix}: {', '.join(items)}.", WHY)
-        return flag(f"{n} unmanaged campaign budget row(s) are still active based on end date.", WHY)
+            what = f"{n} unmanaged campaign budget(s) still active{suffix}: {', '.join(items)}."
+            action = f"Revisit personalization on the given Campaigns: {', '.join(items)}."
+            return flag(what, WHY, action)
+        return flag(f"{n} unmanaged campaign budget row(s) are still active based on end date.", WHY,
+                    "Revisit personalization on the given Campaigns — check tab 32 for details.")
     return ok("No active unmanaged campaign budgets detected — all records are expired or empty.", WHY)
 
 
@@ -867,8 +909,9 @@ def eval_C018(ctx: DatabricksContext) -> ControlResult:
 
 
 # ---- C019/C020/C021: Portfolio personalization controls ----
-# Any active setting on a non-exempt portfolio = FLAG.
-# Exempt portfolios: name starts with "SD QT AMZ" AND contains "Promo".
+# C019/C020: any active boolean setting on a non-exempt portfolio = FLAG.
+# C021: BudgetCap is stored as a string ('Daily') not a boolean — use _has_value instead of as_bool.
+# Exempt portfolios: name starts with 'SD QT AMZ' OR contains 'Promo' (case-insensitive).
 def eval_C019(ctx: DatabricksContext) -> ControlResult:
     WHY = "IsDailyVamBaseline overrides the standard portfolio-level VAM behavior. Any active override on a non-exempt portfolio breaks consistent bid management."
     return _portfolio_any_active_check(ctx, ["isdailyvambaseline", "IsDailyVamBaseline"], "IsDailyVamBaseline", WHY)
@@ -881,7 +924,52 @@ def eval_C020(ctx: DatabricksContext) -> ControlResult:
 
 def eval_C021(ctx: DatabricksContext) -> ControlResult:
     WHY = "IsBudgetCap limits portfolio-level budget flexibility. Any active cap on a non-exempt portfolio can constrain delivery and reduce scaling capacity."
-    return _portfolio_any_active_check(ctx, ["isbudgetcap", "IsBudgetCap"], "IsBudgetCap", WHY)
+    sh, df = ds(ctx, "PORTFOLIO_INSIGHTS", "25_Portfolio_Insights_and_Confi")
+    if df is None or df.empty:
+        return ok("No portfolio data found. Nothing to evaluate.", WHY)
+
+    is_managed = find_col(df, ["ismanaged"])
+    if not is_managed:
+        return ok("Portfolio data found but no managed/unmanaged flag detected.", WHY)
+
+    elig = df[df[is_managed].apply(as_bool) == True].copy()  # noqa: E712
+    if elig.empty:
+        return ok("No managed portfolios found. Nothing to evaluate.", WHY)
+
+    name_col = find_col(elig, ["portfolioname", "portfolio_name", "name", "portfolio"])
+    col = find_col(elig, ["isbudgetcap", "IsBudgetCap", "budgetcap", "BudgetCap"])
+    if not col:
+        return ok("No BudgetCap column found in portfolio data.", WHY)
+
+    if name_col:
+        non_exempt = elig[~elig[name_col].apply(lambda x: _is_exempt_portfolio(_clean_cell_to_str(x)))].copy()
+    else:
+        non_exempt = elig.copy()
+
+    if non_exempt.empty:
+        return ok("All managed portfolios are exempt. Nothing to evaluate.", WHY)
+
+    # BudgetCap is stored as a string ('Daily') not a boolean — use _has_value.
+    active = non_exempt[non_exempt[col].apply(_has_value)].copy()
+    active_count = len(active)
+
+    if active_count == 0:
+        return ok("No non-exempt managed portfolios have a BudgetCap set.", WHY)
+
+    items = []
+    if name_col:
+        for v in active[name_col].dropna().head(3).tolist():
+            s = _clean_cell_to_str(v)
+            if s:
+                items.append(s)
+
+    suffix = f" (showing first {len(items)} of {active_count})" if active_count > 3 else ""
+    if items:
+        what = f"{active_count} non-exempt portfolio(s) have a BudgetCap set{suffix}: {', '.join(items)}."
+        action = f"Revisit personalization on the given Portfolios: {', '.join(items)}."
+        return flag(what, WHY, action)
+    return flag(f"{active_count} non-exempt portfolio(s) have a BudgetCap set.", WHY,
+                "Revisit personalization on the given Portfolios.")
 
 
 # ---- C022–C033: Seller Params ----

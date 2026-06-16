@@ -14,8 +14,9 @@ STATUS_PARTIAL = "PARTIAL"
 @dataclass(frozen=True)
 class ControlResult:
     status: str
-    what: str = ""   # What We Saw — always populated, plain language + numbers
-    why: str = ""    # Why It Matters — one short action-oriented sentence
+    what: str = ""    # What We Saw — always populated, plain language + numbers
+    why: str = ""     # Why It Matters — one short action-oriented sentence
+    action: str = ""  # What You Should Do — dynamic text with actual names/ASINs/campaigns/portfolios
 
 
 # ---------- Databricks workbook sheet candidates ----------
