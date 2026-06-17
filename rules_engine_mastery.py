@@ -480,21 +480,17 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
 
     # -------------------------------------------------------------------------
     # C005 — Operational Constraints Awareness
-    # Reads AL7 (Yes/No) and cross-checks AY7 + AM7 + BN7 for strong constraint signals.
+    # Operational_Constraints__c is not present in the Databricks export.
+    # The agent runs entirely on narrative signal scanning across objective,
+    # near-term, and challenges fields.
     #
-    # Four scenarios:
-    # 1. AL7 = No  + no signals in other fields  → OK  (consistent, no constraints)
-    # 2. AL7 = No  + strong signals in other fields → PARTIAL (default No, constraints exist)
-    # 3. AL7 = Yes + signals found or detail present → OK (acknowledged and supported)
-    # 4. AL7 = Yes + no signals and no detail → PARTIAL (acknowledged but not documented)
-    #
-    # Contradiction (AL7 = No + explicit constraint language like "product restriction") → FLAG
+    # Outcomes:
+    #   Strong signals found → FLAG (constraint exists and is not formally acknowledged)
+    #   Weak signals found   → PARTIAL (possible constraint worth reviewing)
+    #   No signals found     → OK (no constraints detected)
     # -------------------------------------------------------------------------
-    al7 = clean_text(ctx.al).lower().strip() if ctx.al else ''
-    al7_yes = al7 == 'yes'
-    al7_no  = al7 in ('no', '')
 
-    # Scan narrative fields for strong constraint signals
+    # Scan narrative fields for constraint signals
     narrative = ' '.join([
         clean_text(ctx.ay).lower(),
         clean_text(ctx.am).lower(),
@@ -506,43 +502,24 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
         'compliance', 'intellectual property', 'logistics', 'cash flow',
     ])]
 
-    if al7_yes:
-        if signals_found:
-            detail_preview = signals_found[0]
-            r['C005'] = ControlResult(
-                'OK',
-                f'Operational constraints are marked as present in the account notes. Supporting signals found: {detail_preview}.',
-                WHY['C005'], SOURCES['C005']
-            )
-        else:
-            r['C005'] = ControlResult(
-                'PARTIAL',
-                'The account notes mark operational constraints as present, but no constraint detail was found in the objective, context, or challenges fields. Document what the constraints are.',
-                WHY['C005'], SOURCES['C005']
-            )
-    elif al7_no:
-        if strong_signals:
-            r['C005'] = ControlResult(
-                'FLAG',
-                f'The account notes say no constraints, but constraint signals were detected in the narrative: {strong_signals[0]}. Update the operational constraints field and document the constraint properly.',
-                WHY['C005'], SOURCES['C005']
-            )
-        elif signals_found:
-            r['C005'] = ControlResult(
-                'PARTIAL',
-                f'The account notes say no constraints, but a possible constraint signal was detected in the narrative: {signals_found[0]}. Check if this is an operational constraint and update the field if needed.',
-                WHY['C005'], SOURCES['C005']
-            )
-        else:
-            r['C005'] = ControlResult(
-                'OK',
-                'No operational constraints are documented or detected in the account notes. The field is consistent.',
-                WHY['C005'], SOURCES['C005']
-            )
-    else:
+    if strong_signals:
+        signal_list = ', '.join(strong_signals[:3])
+        r['C005'] = ControlResult(
+            'FLAG',
+            f'Constraint signals detected in the account narrative: {signal_list}. These suggest an operational constraint exists. Document it formally so any reviewer understands the limit before making changes.',
+            WHY['C005'], SOURCES['C005']
+        )
+    elif signals_found:
+        signal_list = ', '.join(signals_found[:3])
         r['C005'] = ControlResult(
             'PARTIAL',
-            'The operational constraints field in the account notes has not been filled in. Mark it as Yes or No.',
+            f'Possible constraint signals detected in the account narrative: {signal_list}. Check whether these represent a real operational constraint and document them if so.',
+            WHY['C005'], SOURCES['C005']
+        )
+    else:
+        r['C005'] = ControlResult(
+            'OK',
+            'No operational constraint signals detected in the objective, near-term, or challenges fields. No action needed.',
             WHY['C005'], SOURCES['C005']
         )
 
@@ -581,11 +558,20 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
         cjm_execs        = ctx.cjm_exec_date or [None, None, None, None]
         cjm_completions  = ctx.cjm_actual_completion or [None, None, None, None]
 
-        # Active stages = those with a Status value
-        active_idx = [i for i, s in enumerate(cjm_statuses) if s]
-        stage_count = len(active_idx)
+        # All stages = any slot that has at least one field populated (status, strategy, adoption, intro, or exec date)
+        # A stage with no status but other fields populated = stage exists but status is missing → flag it
+        # A stage with nothing at all = slot is truly empty (e.g. only 3 stages defined)
+        def _stage_has_data(i):
+            return any([
+                cjm_statuses[i], cjm_strategies[i], cjm_adoptions[i],
+                cjm_intros[i] is not None, cjm_execs[i] is not None,
+            ])
 
-        # If tab 55 has no stage data, fall back to binary presence check
+        defined_idx = [i for i in range(4) if _stage_has_data(i)]   # stages with any data
+        active_idx  = [i for i in defined_idx if cjm_statuses[i]]   # stages with a status set
+        stage_count = len(defined_idx)
+
+        # If no stage data at all, fall back to binary presence check
         if stage_count == 0:
             r['C006'] = ControlResult('OK', 'A Client Journey Map is linked to this account. Stage detail was not available for deeper evaluation.', WHY['C006'], SOURCES['C006'])
         else:
@@ -615,10 +601,16 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
                 issues_partial.append('CGM Last Reviewed Date is not set. A CGM must review and sign off on the CJM.')
 
             # Sub-3: stage count ≥ 3 (2.2.1)
+            # defined_idx counts all stages with any data, not just those with a status
             if stage_count < 3:
                 issues_flag.append(f'Only {stage_count} stage(s) defined — minimum 3 required (one In Progress, one Next, at least one Planned).')
 
-            # Sub-4: status distribution (2.2.2–2.2.4)
+            # Sub-3b: flag stages that exist but have no status set
+            missing_status_idx = [i for i in defined_idx if not cjm_statuses[i]]
+            for i in missing_status_idx:
+                issues_flag.append(f'Stage {i+1} has no status set — must be In Progress, Next, or Planned.')
+
+            # Sub-4: status distribution (2.2.2–2.2.4) — only among stages with a status
             in_prog = sum(1 for s in cjm_statuses if s == 'In Progress')
             nxt     = sum(1 for s in cjm_statuses if s == 'Next')
             planned = sum(1 for s in cjm_statuses if s == 'Planned')
@@ -627,17 +619,16 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
                 status_issues.append(f'{in_prog} In Progress stage(s) — exactly 1 required')
             if nxt != 1:
                 status_issues.append(f'{nxt} Next stage(s) — exactly 1 required')
-            if planned < 1:
+            if planned < 1 and not missing_status_idx:
+                # Only flag missing Planned if all stages have a status — otherwise the blank
+                # stages may become Planned once filled in
                 status_issues.append('no Planned stage — at least 1 required')
             if status_issues:
                 issues_flag.append('Status distribution: ' + '; '.join(status_issues) + '.')
 
-            # Sub-5: each stage has exactly one product type populated (2.2.5)
-            # AdoptionOrUpsell values: 'Upsell' means upsell stage, 'Drive Success' means drive-success stage.
-            # Flag stages where the adoption field is blank (neither) or if both Upsell and Drive Success
-            # somehow co-exist (not possible with a picklist, but guard anyway).
+            # Sub-5: each defined stage has a product type set (2.2.5)
             adoption_issues = []
-            for i in active_idx:
+            for i in defined_idx:
                 adoption_val = clean_text(cjm_adoptions[i]).strip().lower() if cjm_adoptions[i] else ''
                 if not adoption_val:
                     adoption_issues.append(f'Stage {i+1} has no product type set (must be Upsell or Drive Success).')
@@ -731,15 +722,18 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
             age_days   = (today - mod_date).days if mod_date else None
             staleness_note = f'Last updated {age_days} days ago ({mod_date}).' if mod_date else 'Last updated date not available.'
             reviewed_note  = f'CGM reviewed on {reviewed_date}.' if reviewed_date else 'CGM review date not set.'
+            cjm_label  = f'CJM: "{ctx.cjm_name}".' if getattr(ctx, 'cjm_name', '') else ''
 
             stage_detail = []
-            for i in active_idx:
+            for i in defined_idx:
+                status_val   = cjm_statuses[i] or 'no status'
                 adoption_val = clean_text(cjm_adoptions[i]) or 'no product type'
                 strategy_val = trim(clean_text(cjm_strategies[i]), 50) or 'no strategy'
-                stage_detail.append(f'Stage {i+1} ({cjm_statuses[i]}): {adoption_val}, strategy: "{strategy_val}"')
+                stage_detail.append(f'Stage {i+1} ({status_val}): {adoption_val}, strategy: "{strategy_val}"')
 
             status_summary = (
-                f'{stage_count} stage(s) defined — {in_prog}x In Progress, {nxt}x Next, {planned}x Planned. '
+                f'{stage_count} stage(s) defined — {in_prog}x In Progress, {nxt}x Next, {planned}x Planned, '
+                f'{len(missing_status_idx)}x no status. '
                 + ' | '.join(stage_detail) + '.'
             )
 
@@ -749,19 +743,19 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
             if fail_count == 0:
                 r['C006'] = ControlResult(
                     'OK',
-                    f'Client Journey Map is complete. {staleness_note} {reviewed_note} {status_summary}',
+                    f'Client Journey Map is complete. {cjm_label} {staleness_note} {reviewed_note} {status_summary}',
                     WHY['C006'], SOURCES['C006']
                 )
             elif issues_flag or fail_count >= 3:
                 r['C006'] = ControlResult(
                     'FLAG',
-                    f'Client Journey Map has {len(all_issues)} issue(s). {staleness_note} {reviewed_note} {status_summary} Issues: ' + ' | '.join(all_issues),
+                    f'Client Journey Map has {len(all_issues)} issue(s). {cjm_label} {staleness_note} {reviewed_note} {status_summary} Issues: ' + ' | '.join(all_issues),
                     WHY['C006'], SOURCES['C006']
                 )
             else:
                 r['C006'] = ControlResult(
                     'PARTIAL',
-                    f'Client Journey Map is linked but has {len(all_issues)} gap(s). {staleness_note} {reviewed_note} {status_summary} Issues: ' + ' | '.join(all_issues),
+                    f'Client Journey Map is linked but has {len(all_issues)} gap(s). {cjm_label} {staleness_note} {reviewed_note} {status_summary} Issues: ' + ' | '.join(all_issues),
                     WHY['C006'], SOURCES['C006']
                 )
 

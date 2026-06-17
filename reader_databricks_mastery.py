@@ -38,7 +38,6 @@ class DatabricksContext:
     ay: str = ''
     am: str = ''
     bn: str = ''
-    al: str = ''
     au: str = ''
     bw: str = ''
     o7: object = None
@@ -347,7 +346,9 @@ def load_databricks_context(path: str) -> DatabricksContext:
         ctx.ay  = clean_text(_cell_val(row38, 'AY'))
         ctx.am  = clean_text(_cell_val(row38, 'AM'))
         ctx.bn  = clean_text(_cell_val(row38, 'BN'))
-        ctx.al  = clean_text(_cell_val(row38, 'AL'))
+        # Near_Term_and_Primary_Objective_Conflict__c — read by name from tab 38 (same field as tab 55)
+        _conflict_38 = df38[df38.columns[df38.columns.str.lower() == 'near_term_and_primary_objective_conflict__c'].tolist()[0]].iloc[0] if any(df38.columns.str.lower() == 'near_term_and_primary_objective_conflict__c') else None
+        ctx.sf_near_term_conflict = clean_text(_conflict_38) if _conflict_38 is not None and str(_conflict_38) != 'nan' else ''
         ctx.au  = clean_text(_cell_val(row38, 'AU'))
         ctx.bw  = clean_text(_cell_val(row38, 'BW')).upper()
         ctx.o7  = _cell_val(row38, 'O')
@@ -461,7 +462,9 @@ def load_databricks_context(path: str) -> DatabricksContext:
                 ctx.sf_primary_objective       = _s55('Primary_Objective__c')
                 ctx.sf_primary_objective_context = _s55('Primary_Objective_Additional_Context__c')
                 ctx.sf_near_term               = _s55('Near_Term_3_Month_Considerations__c')
-                ctx.sf_near_term_conflict      = _s55('Near_Term_and_Primary_Objective_Conflict__c')
+                # Only use tab 55 conflict field if tab 38 didn't already provide it
+                if not ctx.sf_near_term_conflict:
+                    ctx.sf_near_term_conflict = _s55('Near_Term_and_Primary_Objective_Conflict__c')
                 ctx.sf_current_challenges      = _s55('Current_Challenges__c')
                 ctx.sf_primary_spend_kpi       = _s55('Primary_Spend_KPI__c').upper()
                 ctx.sf_acos_constraint         = _s55_raw('ACOS_Constraint__c')
