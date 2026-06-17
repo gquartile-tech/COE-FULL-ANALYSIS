@@ -303,14 +303,14 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
         return 'flag'
 
     if not txt and not sf_obj:
-        r['C001'] = ControlResult('FLAG', 'No primary objective is written in the account notes (AY7), and the CSP Primary Objective field is also empty.', WHY['C001'], SOURCES['C001'])
+        r['C001'] = ControlResult('FLAG', 'No primary objective is written in the account notes, and the CSP Primary Objective field in Salesforce is also empty.', WHY['C001'], SOURCES['C001'])
     elif not txt and sf_obj:
         # AY7 empty but SF has content — use SF, note the narrative gap
         sf_score = _score_objective_text(sf_obj)
         if sf_score == 'ok':
-            r['C001'] = ControlResult('PARTIAL', f'AY7 narrative is empty, but the CSP Primary Objective field is documented: "{trim(sf_obj, 180)}". Copy this into AY7 to close the gap.', WHY['C001'], SOURCES['C001'])
+            r['C001'] = ControlResult('PARTIAL', f'The account notes objective field is empty, but the CSP Primary Objective field in Salesforce is documented: "{trim(sf_obj, 180)}". Copy this into AY7 to close the gap.', WHY['C001'], SOURCES['C001'])
         else:
-            r['C001'] = ControlResult('PARTIAL', f'AY7 narrative is empty. The CSP Primary Objective field has content but it is not anchored to a measurable target: "{trim(sf_obj, 180)}". Update both sources.', WHY['C001'], SOURCES['C001'])
+            r['C001'] = ControlResult('PARTIAL', f'The account notes objective field is empty. The CSP Primary Objective field in Salesforce has content but is not anchored to a measurable target: "{trim(sf_obj, 180)}". Update both sources.', WHY['C001'], SOURCES['C001'])
     else:
         # AY7 has content — evaluate it first
         score = _score_objective_text(txt)
@@ -325,7 +325,7 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
             # AY7 is OK — cross-check CSP field and objective context (check 1.5.2)
             sf_obj_context = clean_text(ctx.sf_primary_objective_context)
             if not sf_obj:
-                r['C001'] = ControlResult('PARTIAL', 'Objective is documented in AY7 and is clear. However, the CSP Primary Objective field (Salesforce) is empty — the Salesforce record is incomplete.', WHY['C001'], SOURCES['C001'])
+                r['C001'] = ControlResult('PARTIAL', 'Objective is documented in the account notes and is clear. However, the CSP Primary Objective field in Salesforce is empty — the Salesforce record is incomplete.', WHY['C001'], SOURCES['C001'])
             elif not sf_obj_context:
                 r['C001'] = ControlResult('PARTIAL', 'Primary objective is documented and the CSP field is populated. However, the CSP "Context on Primary Objective" field is empty. Add narrative context explaining how the client defines success.', WHY['C001'], SOURCES['C001'])
             else:
@@ -348,13 +348,13 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
 
     # If AM7 is empty, use sf_near_term as fallback source
     eval_text = txt if txt else sf_near
-    source_note = '' if txt else ' (from CSP Salesforce field — AY7 narrative is empty)'
+    source_note = '' if txt else ' (sourced from CSP Salesforce field — account notes are empty)'
 
     if not eval_text:
         if sf_conflict in ('Yes', 'No'):
-            r['C002'] = ControlResult('FLAG', f'The objective context field (AM7) is empty and no near-term text is documented in the CSP. However, the Conflict field is set to "{sf_conflict}". Add supporting context to explain the near-term situation.', WHY['C002'], SOURCES['C002'])
+            r['C002'] = ControlResult('FLAG', f'The near-term considerations field in the account notes is empty and no near-term text is documented in the CSP. However, the Conflict field is set to "{sf_conflict}". Add supporting context to explain the near-term situation.', WHY['C002'], SOURCES['C002'])
         else:
-            r['C002'] = ControlResult('FLAG', 'The objective context field (AM7) is empty and the CSP Near-Term Considerations field is also blank. There is no supporting detail for the primary objective.', WHY['C002'], SOURCES['C002'])
+            r['C002'] = ControlResult('FLAG', 'The near-term considerations field in the account notes is empty and the CSP Near-Term Considerations field in Salesforce is also blank. There is no supporting detail for the primary objective.', WHY['C002'], SOURCES['C002'])
     else:
         # KPI dimension: prefer structured sf_primary_spend_kpi, fall back to keyword match
         kpi_ok = sf_kpi in ('ACOS', 'ROAS', 'TACOS') or has_any(eval_text, KPI_WORDS)
@@ -437,10 +437,10 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
     sf_chal = ctx.sf_current_challenges
 
     eval_text = txt if txt else sf_chal
-    source_note = '' if txt else ' (from CSP Salesforce field — BN7 narrative is empty)'
+    source_note = '' if txt else ' (sourced from CSP Salesforce field — account notes challenges field is empty)'
 
     if not eval_text:
-        r['C003'] = ControlResult('FLAG', 'No current challenges are documented in the account notes (BN7) or the CSP Salesforce record.', WHY['C003'], SOURCES['C003'])
+        r['C003'] = ControlResult('FLAG', 'No current challenges are documented in the account notes or the CSP Salesforce record.', WHY['C003'], SOURCES['C003'])
     else:
         t_lower = clean_text(eval_text).lower()
         metric_target_count = len(re.findall(
@@ -511,38 +511,38 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
             detail_preview = signals_found[0]
             r['C005'] = ControlResult(
                 'OK',
-                f'Operational constraints are acknowledged in AL7. Supporting signals found in account notes: {detail_preview}.',
+                f'Operational constraints are marked as present in the account notes. Supporting signals found: {detail_preview}.',
                 WHY['C005'], SOURCES['C005']
             )
         else:
             r['C005'] = ControlResult(
                 'PARTIAL',
-                'AL7 marks constraints as present, but no constraint detail was found in the objective, context, or challenges fields. Document what the constraints are.',
+                'The account notes mark operational constraints as present, but no constraint detail was found in the objective, context, or challenges fields. Document what the constraints are.',
                 WHY['C005'], SOURCES['C005']
             )
     elif al7_no:
         if strong_signals:
             r['C005'] = ControlResult(
                 'FLAG',
-                f'AL7 says no constraints, but the account notes mention: {strong_signals[0]}. Update AL7 and document the constraint properly.',
+                f'The account notes say no constraints, but constraint signals were detected in the narrative: {strong_signals[0]}. Update the operational constraints field and document the constraint properly.',
                 WHY['C005'], SOURCES['C005']
             )
         elif signals_found:
             r['C005'] = ControlResult(
                 'PARTIAL',
-                f'AL7 says no constraints, but the account notes mention: {signals_found[0]}. Check if this is an operational constraint and update AL7 if needed.',
+                f'The account notes say no constraints, but a possible constraint signal was detected in the narrative: {signals_found[0]}. Check if this is an operational constraint and update the field if needed.',
                 WHY['C005'], SOURCES['C005']
             )
         else:
             r['C005'] = ControlResult(
                 'OK',
-                'No operational constraints are documented or detected in the account notes. AL7 is consistent.',
+                'No operational constraints are documented or detected in the account notes. The field is consistent.',
                 WHY['C005'], SOURCES['C005']
             )
     else:
         r['C005'] = ControlResult(
             'PARTIAL',
-            'AL7 (operational constraints field) has not been filled in. Mark it as Yes or No.',
+            'The operational constraints field in the account notes has not been filled in. Mark it as Yes or No.',
             WHY['C005'], SOURCES['C005']
         )
 
@@ -802,11 +802,11 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
     # — Missing field checks (gated on KPI relevance) —
     field_labels = []
     if acos_required:
-        field_labels.append((acos_c, 'ACoS constraint (O7)'))
+        field_labels.append((acos_c, 'ACoS constraint'))
     if tacos_required:
-        field_labels.append((tacos_c, 'TACoS constraint (AX7)'))
-    field_labels.append((proj_acos,  'ACoS target (J7)'))
-    field_labels.append((proj_tacos, 'TACoS target (K7)'))
+        field_labels.append((tacos_c, 'TACoS constraint'))
+    field_labels.append((proj_acos,  'ACoS target'))
+    field_labels.append((proj_tacos, 'TACoS target'))
 
     missing_fields = [label for value, label in field_labels if value is None]
     if len(missing_fields) >= 2:
@@ -844,12 +844,12 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
     if sf_acos_c is not None and acos_c is not None:
         if abs(sf_acos_c - acos_c) > 0.02:
             issues_partial.append(
-                f'ACoS constraint mismatch: Salesforce CSP says {pct_str(sf_acos_c)} but the project record (O7) shows {pct_str(acos_c)}. Reconcile the two sources.'
+                f'ACoS constraint mismatch: Salesforce CSP says {pct_str(sf_acos_c)} but the project record shows {pct_str(acos_c)}. Reconcile the two sources.'
             )
     if sf_tacos_c is not None and tacos_c is not None:
         if abs(sf_tacos_c - tacos_c) > 0.02:
             issues_partial.append(
-                f'TACoS constraint mismatch: Salesforce CSP says {pct_str(sf_tacos_c)} but the project record (AX7) shows {pct_str(tacos_c)}. Reconcile the two sources.'
+                f'TACoS constraint mismatch: Salesforce CSP says {pct_str(sf_tacos_c)} but the project record shows {pct_str(tacos_c)}. Reconcile the two sources.'
             )
 
     # — Resolve status and build message —
@@ -907,7 +907,7 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
 
         # Pick the best documented class (AU7 first, SF fallback)
         doc_class = narr_class if narr_class is not None else sf_class
-        doc_source = 'AU7' if narr_class is not None else 'CSP Salesforce field'
+        doc_source = 'account notes' if narr_class is not None else 'CSP Salesforce field'
 
         # Cross-source consistency note
         source_conflict = (
@@ -915,10 +915,10 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
         )
 
         if doc_class is None:
-            r['C008'] = ControlResult('FLAG', f'Sales concentration is not documented in AU7 or the CSP record. Actual concentration is {actual_class}. {conc_detail}', WHY['C008'], SOURCES['C008'])
+            r['C008'] = ControlResult('FLAG', f'Sales concentration is not documented in the account notes or the CSP record. Actual concentration is {actual_class}. {conc_detail}', WHY['C008'], SOURCES['C008'])
         elif doc_class == actual_class:
             if source_conflict:
-                r['C008'] = ControlResult('PARTIAL', f'Sales concentration ({doc_source}) is documented as {doc_class} and matches actual data. However, AU7 says "{narr_class}" and the CSP says "{sf_class}" — reconcile the two sources. {conc_detail}', WHY['C008'], SOURCES['C008'])
+                r['C008'] = ControlResult('PARTIAL', f'Sales concentration ({doc_source}) is documented as {doc_class} and matches actual data. However, the account notes say "{narr_class}" and the CSP says "{sf_class}" — reconcile the two sources. {conc_detail}', WHY['C008'], SOURCES['C008'])
             else:
                 r['C008'] = ControlResult('OK', f'Sales concentration is documented as {doc_class} ({doc_source}) and matches the actual data. {conc_detail}', WHY['C008'], SOURCES['C008'])
         else:
