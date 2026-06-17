@@ -83,6 +83,11 @@ class DatabricksContext:
     sf_daily_target_spend: object = None  # numeric or None
     sf_target_roas: object = None         # numeric or None
     sf_sales_concentration: str = ''      # 'Low Concentration' | 'Medium Concentration' | 'High Concentration'
+    sf_commodity_or_brand: str = ''       # CSP field: Commodity or Brand designation (1.3.5)
+    sf_reseller: str = ''                 # CSP field: Reseller designation (1.3.11)
+    sf_top_priority: str = ''             # CSP field: Top Priority for Upcoming Quarter (1.5.3)
+    sf_second_priority: str = ''          # CSP field: Second Priority for Upcoming Quarter (1.5.4)
+    sf_expansion_opportunity: str = ''    # CSP field: Biggest Expansion Opportunity (1.5.5)
     # ── CJM stage data (from tab 55 Salesforce Consolidated) ─────────────────
     cjm_id: str = ''
     cjm_status: list = None               # [StatusS1..S4] — None-padded to length 4
@@ -425,6 +430,11 @@ def load_databricks_context(path: str) -> DatabricksContext:
                 ctx.sf_daily_target_spend      = _s55_raw('daily_target_spend__c')
                 ctx.sf_target_roas             = _s55_raw('Target_ROAS__c')
                 ctx.sf_sales_concentration     = _s55('Sales_Concentration__c')
+                ctx.sf_commodity_or_brand      = _s55('Commodity_or_Brand__c')
+                ctx.sf_reseller                = _s55('Reseller__c')
+                ctx.sf_top_priority            = _s55('Top_Priority_for_the_Upcoming_Quarter__c')
+                ctx.sf_second_priority         = _s55('Second_Priority_for_the_Upcoming_Quarter__c')
+                ctx.sf_expansion_opportunity   = _s55('Biggest_Expansion_Opportunity__c')
 
                 # CJM identity and dates
                 ctx.cjm_id            = _s55('Customer_Journey_Map__c')

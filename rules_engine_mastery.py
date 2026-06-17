@@ -322,11 +322,14 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
             else:
                 r['C001'] = ControlResult('PARTIAL', 'Objective is written, but it is not anchored to a measurable target or specific KPI. Add a number or metric to make it actionable.', WHY['C001'], SOURCES['C001'])
         else:
-            # AY7 is OK — cross-check CSP field
+            # AY7 is OK — cross-check CSP field and objective context (check 1.5.2)
+            sf_obj_context = clean_text(ctx.sf_primary_objective_context)
             if not sf_obj:
-                r['C001'] = ControlResult('PARTIAL', f'Objective is documented in AY7 and is clear. However, the CSP Primary Objective field (Salesforce) is empty — the Salesforce record is incomplete.', WHY['C001'], SOURCES['C001'])
+                r['C001'] = ControlResult('PARTIAL', 'Objective is documented in AY7 and is clear. However, the CSP Primary Objective field (Salesforce) is empty — the Salesforce record is incomplete.', WHY['C001'], SOURCES['C001'])
+            elif not sf_obj_context:
+                r['C001'] = ControlResult('PARTIAL', 'Primary objective is documented and the CSP field is populated. However, the CSP "Context on Primary Objective" field is empty. Add narrative context explaining how the client defines success.', WHY['C001'], SOURCES['C001'])
             else:
-                r['C001'] = ControlResult('OK', 'Primary objective is documented and linked to a clear business outcome. CSP field is also populated.', WHY['C001'], SOURCES['C001'])
+                r['C001'] = ControlResult('OK', 'Primary objective is documented and linked to a clear business outcome. CSP field and objective context are both populated.', WHY['C001'], SOURCES['C001'])
 
     # -------------------------------------------------------------------------
     # C002 — Objective vs Near-Term Alignment
@@ -372,14 +375,56 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
         has_timeframe = dims['timeframe']
         conflict_note = f' Conflict with primary objective: {sf_conflict}.' if conflict_assessed else ''
 
-        if n == total_possible:
-            r['C002'] = ControlResult('OK', f'Objective context covers all elements: goal, KPI, constraint, timeframe, narrative depth, and conflict assessment.{source_note}{conflict_note}', WHY['C002'], SOURCES['C002'])
+        # --- CSP completeness checks (1.5.3, 1.5.4, 1.5.5, 1.3.5, 1.3.11) ---
+        # These are additive: each blank CSP field downgrades the result toward PARTIAL.
+        # They do not cause FLAG on their own — narrative depth is the primary gate.
+        # Build found/missing lists so what_we_saw always shows actual values.
+        csp_checks = [
+            ('Top priority for next quarter',        clean_text(ctx.sf_top_priority)),
+            ('Second priority for next quarter',     clean_text(ctx.sf_second_priority)),
+            ('Biggest expansion opportunity',        clean_text(ctx.sf_expansion_opportunity)),
+            ('Commodity or Brand designation',       clean_text(ctx.sf_commodity_or_brand)),
+            ('Reseller designation',                 clean_text(ctx.sf_reseller)),
+        ]
+        csp_found = [(label, val) for label, val in csp_checks if val]
+        csp_gaps  = [label        for label, val in csp_checks if not val]
+
+        csp_found_note = ' CSP fields populated — ' + '; '.join(
+            f'{label}: "{trim(val, 60)}"' for label, val in csp_found
+        ) + '.' if csp_found else ' None of the required CSP priority and account fields are populated.'
+
+        csp_gap_note = ' Missing CSP fields — ' + '; '.join(csp_gaps) + '. These need to be filled in Salesforce.' if csp_gaps else ''
+
+        if n == total_possible and not csp_gaps:
+            r['C002'] = ControlResult(
+                'OK',
+                f'Objective context covers all 6 elements: goal, KPI, constraint, timeframe, narrative depth, and conflict assessment.{conflict_note}{source_note}{csp_found_note}',
+                WHY['C002'], SOURCES['C002']
+            )
+        elif n == total_possible and csp_gaps:
+            r['C002'] = ControlResult(
+                'PARTIAL',
+                f'Objective context covers all 6 narrative elements.{conflict_note}{source_note}{csp_found_note}{csp_gap_note}',
+                WHY['C002'], SOURCES['C002']
+            )
         elif n >= 4 and has_timeframe:
-            r['C002'] = ControlResult('PARTIAL', f'Objective context is written but some elements are missing: {", ".join(missing)}.{source_note}{conflict_note}', WHY['C002'], SOURCES['C002'])
+            r['C002'] = ControlResult(
+                'PARTIAL',
+                f'Objective context is written but {len(missing)} of 6 element(s) are missing: {", ".join(missing)}.{source_note}{conflict_note}{csp_found_note}{csp_gap_note}',
+                WHY['C002'], SOURCES['C002']
+            )
         elif n >= 3 and not has_timeframe:
-            r['C002'] = ControlResult('PARTIAL', f'Objective context is written but has no timeframe or near-term reference. Also missing: {", ".join([m for m in missing if m != "timeframe"])}.{source_note}{conflict_note}', WHY['C002'], SOURCES['C002'])
+            r['C002'] = ControlResult(
+                'PARTIAL',
+                f'Objective context is written but has no timeframe or near-term reference. Also missing: {", ".join([m for m in missing if m != "timeframe"])}.{source_note}{conflict_note}{csp_found_note}{csp_gap_note}',
+                WHY['C002'], SOURCES['C002']
+            )
         else:
-            r['C002'] = ControlResult('FLAG', f'Objective context does not have enough detail. Missing elements: {", ".join(missing)}.{source_note}', WHY['C002'], SOURCES['C002'])
+            r['C002'] = ControlResult(
+                'FLAG',
+                f'Objective context does not have enough detail. {len(missing)} of 6 element(s) missing: {", ".join(missing)}.{source_note}{csp_found_note}{csp_gap_note}',
+                WHY['C002'], SOURCES['C002']
+            )
 
     # -------------------------------------------------------------------------
     # C003 — Account Challenges Documented
@@ -504,102 +549,221 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
     # -------------------------------------------------------------------------
     # C006 — Client Journey Map
     # Binary gate: tab 39 H7 (journey_h7) OR cjm_id from tab 55 must be present.
-    # If CJM is found, evaluate 4 sub-check groups from tab 55 stage data:
-    #   Sub-1 (stage count):    ≥3 stages defined
-    #   Sub-2 (status dist.):   exactly 1 In Progress, exactly 1 Next, ≥1 Planned
-    #   Sub-3 (strategy fill):  Strategy field populated for every active stage
-    #   Sub-4 (date logic):     intro date < exec date within each stage;
-    #                           no Next/Planned stages with exec date in the past
-    # 0 sub-checks fail → OK with stage summary
-    # 1–2 fail          → PARTIAL listing issues
-    # 3–4 fail          → FLAG listing all issues
-    # No CJM linked at all → FLAG (same as before)
+    # If CJM is found, evaluate sub-check groups from tab 55 stage data:
+    #   Sub-1  (staleness):      cjm_modified_date within last 90 days (2.1.4)
+    #   Sub-2  (CGM review):     cjm_reviewed_date populated (2.1.2)
+    #   Sub-3  (stage count):    ≥3 stages defined (2.2.1)
+    #   Sub-4  (status dist):    exactly 1 In Progress, 1 Next, ≥1 Planned (2.2.2–2.2.4)
+    #   Sub-5  (product type):   each stage has exactly one product type field populated
+    #                            (AdoptionOrUpsell XOR Drive Success, never both/neither) (2.2.5)
+    #   Sub-6  (strategy fill):  Strategy field populated for every active stage (2.3.1)
+    #   Sub-7  (date presence):  all non-Finalized/Failed stages have intro + exec dates (2.3.4–2.3.5)
+    #   Sub-8  (actual dates):   Finalized stages have Actual Completion Date set (2.3.6)
+    #   Sub-9  (date logic):     intro date < exec date within each stage (2.4.1)
+    #   Sub-10 (past dates):     no Next/Planned stages with dates entirely in the past (2.4.3)
+    #   Sub-11 (sequencing):     stage intro dates follow In Progress → Next → Planned order (2.4.2)
+    # FLAG issues (structural): Sub-3, Sub-4, Sub-5
+    # PARTIAL issues (quality): Sub-1, Sub-2, Sub-6, Sub-7, Sub-8, Sub-9, Sub-10, Sub-11
+    # 0 issues → OK | 1–2 issues → PARTIAL | ≥3 issues or any FLAG issue → FLAG
+    # No CJM linked at all → FLAG
     # -------------------------------------------------------------------------
+    from datetime import date as _date, timedelta as _timedelta
+
     has_cjm = bool(ctx.journey_h7) or bool(ctx.cjm_id)
 
     if not has_cjm:
         r['C006'] = ControlResult('FLAG', 'No Client Journey Map was found for this account. It needs to be created and linked.', WHY['C006'], SOURCES['C006'])
     else:
-        # Check whether we have stage data to evaluate
-        cjm_statuses  = ctx.cjm_status or [None, None, None, None]
-        cjm_strategies = ctx.cjm_strategy or [None, None, None, None]
-        cjm_intros    = ctx.cjm_intro_date or [None, None, None, None]
-        cjm_execs     = ctx.cjm_exec_date or [None, None, None, None]
-        cjm_completions = ctx.cjm_actual_completion or [None, None, None, None]
+        cjm_statuses     = ctx.cjm_status or [None, None, None, None]
+        cjm_strategies   = ctx.cjm_strategy or [None, None, None, None]
+        cjm_adoptions    = ctx.cjm_adoption or [None, None, None, None]
+        cjm_intros       = ctx.cjm_intro_date or [None, None, None, None]
+        cjm_execs        = ctx.cjm_exec_date or [None, None, None, None]
+        cjm_completions  = ctx.cjm_actual_completion or [None, None, None, None]
 
         # Active stages = those with a Status value
         active_idx = [i for i, s in enumerate(cjm_statuses) if s]
         stage_count = len(active_idx)
 
-        # If tab 55 has no stage data, fall back to the old binary check
+        # If tab 55 has no stage data, fall back to binary presence check
         if stage_count == 0:
             r['C006'] = ControlResult('OK', 'A Client Journey Map is linked to this account. Stage detail was not available for deeper evaluation.', WHY['C006'], SOURCES['C006'])
         else:
-            issues_flag = []
+            issues_flag    = []
             issues_partial = []
+            today = _date.today()
 
-            # Sub-1: stage count ≥ 3
+            def _to_date(v):
+                if v is None:
+                    return None
+                try:
+                    return v.date() if hasattr(v, 'date') else v
+                except Exception:
+                    return None
+
+            # Sub-1: CJM updated within last 90 days (2.1.4)
+            mod_date = _to_date(ctx.cjm_modified_date)
+            if mod_date is not None:
+                age_days = (today - mod_date).days
+                if age_days > 90:
+                    issues_partial.append(f'CJM last updated {age_days} days ago ({mod_date}) — must be updated within 90 days.')
+            # If mod_date is None, field likely not in export — skip silently
+
+            # Sub-2: CGM Last Reviewed Date populated (2.1.2)
+            reviewed_date = _to_date(ctx.cjm_reviewed_date)
+            if reviewed_date is None:
+                issues_partial.append('CGM Last Reviewed Date is not set. A CGM must review and sign off on the CJM.')
+
+            # Sub-3: stage count ≥ 3 (2.2.1)
             if stage_count < 3:
-                issues_flag.append(f'Only {stage_count} stage(s) defined — minimum 3 required.')
+                issues_flag.append(f'Only {stage_count} stage(s) defined — minimum 3 required (one In Progress, one Next, at least one Planned).')
 
-            # Sub-2: status distribution
-            in_prog  = sum(1 for s in cjm_statuses if s == 'In Progress')
-            nxt      = sum(1 for s in cjm_statuses if s == 'Next')
-            planned  = sum(1 for s in cjm_statuses if s == 'Planned')
+            # Sub-4: status distribution (2.2.2–2.2.4)
+            in_prog = sum(1 for s in cjm_statuses if s == 'In Progress')
+            nxt     = sum(1 for s in cjm_statuses if s == 'Next')
+            planned = sum(1 for s in cjm_statuses if s == 'Planned')
             status_issues = []
             if in_prog != 1:
-                status_issues.append(f'{in_prog} In Progress stage(s) — exactly 1 expected')
+                status_issues.append(f'{in_prog} In Progress stage(s) — exactly 1 required')
             if nxt != 1:
-                status_issues.append(f'{nxt} Next stage(s) — exactly 1 expected')
+                status_issues.append(f'{nxt} Next stage(s) — exactly 1 required')
             if planned < 1:
                 status_issues.append('no Planned stage — at least 1 required')
             if status_issues:
                 issues_flag.append('Status distribution: ' + '; '.join(status_issues) + '.')
 
-            # Sub-3: strategy fields populated for every active stage
+            # Sub-5: each stage has exactly one product type populated (2.2.5)
+            # AdoptionOrUpsell values: 'Upsell' means upsell stage, 'Drive Success' means drive-success stage.
+            # Flag stages where the adoption field is blank (neither) or if both Upsell and Drive Success
+            # somehow co-exist (not possible with a picklist, but guard anyway).
+            adoption_issues = []
+            for i in active_idx:
+                adoption_val = clean_text(cjm_adoptions[i]).strip().lower() if cjm_adoptions[i] else ''
+                if not adoption_val:
+                    adoption_issues.append(f'Stage {i+1} has no product type set (must be Upsell or Drive Success).')
+            if adoption_issues:
+                issues_flag.extend(adoption_issues)
+
+            # Sub-6: strategy field populated for every active stage (2.3.1)
             missing_strategy = [i + 1 for i in active_idx if not cjm_strategies[i]]
             if missing_strategy:
                 issues_partial.append(f'Strategy field is blank for stage(s): {missing_strategy}.')
 
-            # Sub-4: date logic
-            from datetime import date as _date
-            date_issues = []
-            today = _date.today()
+            # Sub-7: all non-Finalized/Failed stages have intro + exec dates (2.3.4–2.3.5)
+            EXCLUDED_STATUS = {'Finalized', 'Failed'}
+            date_missing = []
             for i in active_idx:
-                intro = cjm_intros[i]
-                exec_ = cjm_execs[i]
                 status = cjm_statuses[i]
-                # intro must be before exec date
-                if intro is not None and exec_ is not None:
-                    intro_d = intro.date() if hasattr(intro, 'date') else intro
-                    exec_d  = exec_.date() if hasattr(exec_, 'date') else exec_
+                if status in EXCLUDED_STATUS:
+                    continue
+                if cjm_intros[i] is None:
+                    date_missing.append(f'Stage {i+1} ({status}) has no Introduction Date.')
+                if cjm_execs[i] is None:
+                    date_missing.append(f'Stage {i+1} ({status}) has no Target Completion Date.')
+            if date_missing:
+                issues_partial.extend(date_missing)
+
+            # Sub-8: Finalized stages must have Actual Completion Date (2.3.6)
+            finalized_missing = []
+            for i in active_idx:
+                if cjm_statuses[i] == 'Finalized' and cjm_completions[i] is None:
+                    finalized_missing.append(f'Stage {i+1} is Finalized but has no Actual Completion Date.')
+            if finalized_missing:
+                issues_partial.extend(finalized_missing)
+
+            # Sub-9: intro date < exec date within each stage (2.4.1)
+            inversion_issues = []
+            for i in active_idx:
+                intro_d = _to_date(cjm_intros[i])
+                exec_d  = _to_date(cjm_execs[i])
+                if intro_d is not None and exec_d is not None:
                     try:
                         if intro_d >= exec_d:
-                            date_issues.append(f'Stage {i+1}: Introduction date ({intro_d}) is not before Completion date ({exec_d}).')
+                            inversion_issues.append(f'Stage {i+1}: Introduction date ({intro_d}) is not before Completion date ({exec_d}).')
                     except Exception:
                         pass
-                # Next/Planned stages should not have a completion date in the past
-                if status in ('Next', 'Planned') and exec_ is not None:
-                    exec_d = exec_.date() if hasattr(exec_, 'date') else exec_
-                    try:
-                        if exec_d < today:
-                            date_issues.append(f'Stage {i+1} ({status}) has a past Completion date ({exec_d}) — update the timeline.')
-                    except Exception:
-                        pass
-            if date_issues:
-                issues_partial.extend(date_issues)
+            if inversion_issues:
+                issues_partial.extend(inversion_issues)
 
-            # Summarise for what_we_saw
-            status_summary = f'{stage_count} stage(s): {in_prog}× In Progress, {nxt}× Next, {planned}× Planned.'
+            # Sub-10: no Next/Planned stages with dates entirely in the past (2.4.3)
+            past_date_issues = []
+            for i in active_idx:
+                status = cjm_statuses[i]
+                if status not in ('Next', 'Planned'):
+                    continue
+                intro_d = _to_date(cjm_intros[i])
+                exec_d  = _to_date(cjm_execs[i])
+                try:
+                    if exec_d is not None and exec_d < today:
+                        past_date_issues.append(f'Stage {i+1} ({status}) has a past Completion date ({exec_d}) — update the timeline.')
+                    elif intro_d is not None and exec_d is None and intro_d < today:
+                        past_date_issues.append(f'Stage {i+1} ({status}) Introduction date ({intro_d}) is in the past with no Completion date set.')
+                except Exception:
+                    pass
+            if past_date_issues:
+                issues_partial.extend(past_date_issues)
+
+            # Sub-11: chronological sequencing In Progress → Next → Planned (2.4.2)
+            # Compare intro dates across status groups. In Progress should be earliest.
+            def _first_intro(status_name):
+                dates = [
+                    _to_date(cjm_intros[i])
+                    for i in active_idx
+                    if cjm_statuses[i] == status_name and _to_date(cjm_intros[i]) is not None
+                ]
+                return min(dates) if dates else None
+
+            ip_intro   = _first_intro('In Progress')
+            nxt_intro  = _first_intro('Next')
+            pln_intro  = _first_intro('Planned')
+            seq_issues = []
+            try:
+                if ip_intro and nxt_intro and ip_intro > nxt_intro:
+                    seq_issues.append(f'In Progress stage starts after Next stage ({ip_intro} > {nxt_intro}) — check stage ordering.')
+                if nxt_intro and pln_intro and nxt_intro > pln_intro:
+                    seq_issues.append(f'Next stage starts after Planned stage ({nxt_intro} > {pln_intro}) — check stage ordering.')
+            except Exception:
+                pass
+            if seq_issues:
+                issues_partial.extend(seq_issues)
+
+            # Summarise result
+            age_days   = (today - mod_date).days if mod_date else None
+            staleness_note = f'Last updated {age_days} days ago ({mod_date}).' if mod_date else 'Last updated date not available.'
+            reviewed_note  = f'CGM reviewed on {reviewed_date}.' if reviewed_date else 'CGM review date not set.'
+
+            stage_detail = []
+            for i in active_idx:
+                adoption_val = clean_text(cjm_adoptions[i]) or 'no product type'
+                strategy_val = trim(clean_text(cjm_strategies[i]), 50) or 'no strategy'
+                stage_detail.append(f'Stage {i+1} ({cjm_statuses[i]}): {adoption_val}, strategy: "{strategy_val}"')
+
+            status_summary = (
+                f'{stage_count} stage(s) defined — {in_prog}x In Progress, {nxt}x Next, {planned}x Planned. '
+                + ' | '.join(stage_detail) + '.'
+            )
+
             all_issues = issues_flag + issues_partial
-            fail_count = len(issues_flag) + len(issues_partial)
+            fail_count = len(all_issues)
 
             if fail_count == 0:
-                r['C006'] = ControlResult('OK', f'Client Journey Map is complete. {status_summary} Strategy fields and date logic are consistent.', WHY['C006'], SOURCES['C006'])
-            elif len(issues_flag) >= 3 or fail_count >= 3:
-                r['C006'] = ControlResult('FLAG', f'Client Journey Map has multiple issues. {status_summary} Issues: ' + ' | '.join(all_issues), WHY['C006'], SOURCES['C006'])
+                r['C006'] = ControlResult(
+                    'OK',
+                    f'Client Journey Map is complete. {staleness_note} {reviewed_note} {status_summary}',
+                    WHY['C006'], SOURCES['C006']
+                )
+            elif issues_flag or fail_count >= 3:
+                r['C006'] = ControlResult(
+                    'FLAG',
+                    f'Client Journey Map has {len(all_issues)} issue(s). {staleness_note} {reviewed_note} {status_summary} Issues: ' + ' | '.join(all_issues),
+                    WHY['C006'], SOURCES['C006']
+                )
             else:
-                r['C006'] = ControlResult('PARTIAL', f'Client Journey Map is linked but has gaps. {status_summary} Issues: ' + ' | '.join(all_issues), WHY['C006'], SOURCES['C006'])
+                r['C006'] = ControlResult(
+                    'PARTIAL',
+                    f'Client Journey Map is linked but has {len(all_issues)} gap(s). {staleness_note} {reviewed_note} {status_summary} Issues: ' + ' | '.join(all_issues),
+                    WHY['C006'], SOURCES['C006']
+                )
 
     # -------------------------------------------------------------------------
     # C007 — Narrative Consistency
