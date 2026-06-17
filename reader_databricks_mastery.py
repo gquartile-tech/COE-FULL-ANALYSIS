@@ -90,6 +90,7 @@ class DatabricksContext:
     sf_expansion_opportunity: str = ''    # CSP field: Biggest Expansion Opportunity (1.5.5)
     # ── CJM stage data (from tab 55 Salesforce Consolidated) ─────────────────
     cjm_id: str = ''
+    cjm_name: str = ''              # CJM record name from tab 39
     cjm_status: list = None               # [StatusS1..S4] — None-padded to length 4
     cjm_strategy: list = None             # [StrategyS1..S4]
     cjm_adoption: list = None             # [AdoptionOrUpsellS1..S4]
@@ -352,9 +353,47 @@ def load_databricks_context(path: str) -> DatabricksContext:
         ctx.o7  = _cell_val(row38, 'O')
         ctx.ax7 = _cell_val(row38, 'AX')
 
-        # --- Tab 39 ---
+        # --- Tab 39: Client Journey Insights — SSOT for all CJM fields ---
         ws39 = _get_ws(wb, '39_Client_Journey_Insights_Data')
         ctx.journey_h7 = ws39['H7'].value if ws39 is not None else None
+
+        if ws39 is not None:
+            df39 = _ws_to_df(ws39)
+            if df39 is not None and not df39.empty:
+                row39 = df39.iloc[0]  # single CJM record per account
+
+                def _s39(field_name: str) -> str:
+                    """Return cleaned string from row39 by column name (case-insensitive)."""
+                    if field_name in row39.index:
+                        return clean_text(row39[field_name])
+                    for col in row39.index:
+                        if str(col).lower() == field_name.lower():
+                            return clean_text(row39[col])
+                    return ''
+
+                def _s39_raw(field_name: str):
+                    """Return raw value from row39 (dates, numerics)."""
+                    if field_name in row39.index:
+                        v = row39[field_name]
+                        return None if pd.isna(v) else v
+                    for col in row39.index:
+                        if str(col).lower() == field_name.lower():
+                            v = row39[col]
+                            return None if pd.isna(v) else v
+                    return None
+
+                ctx.cjm_id            = _s39('Id')
+                ctx.cjm_name          = _s39('Name')
+                ctx.cjm_modified_date = _s39_raw('LastModifiedDate')
+                ctx.cjm_reviewed_date = _s39_raw('CGM_Last_Reviewed_Date__c')
+                ctx.cjm_status        = [_s39(f'StatusS{i}__c') or None for i in range(1, 5)]
+                ctx.cjm_strategy      = [_s39(f'StrategyS{i}__c') or None for i in range(1, 5)]
+                ctx.cjm_adoption      = [_s39(f'AdoptionOrUpsellS{i}__c') or None for i in range(1, 5)]
+                ctx.cjm_intro_date    = [_s39_raw(f'IntroductionDateS{i}__c') for i in range(1, 5)]
+                ctx.cjm_exec_date     = [_s39_raw(f'ExecutionDateS{i}__c') for i in range(1, 5)]
+                ctx.cjm_actual_completion = [
+                    _s39_raw(f'ActualCompletionDateStage{i}__c') for i in range(1, 5)
+                ]
 
         # --- Tab 54: Project Dataset — filter by Advertiser_ID, latest by Modstamp ---
         ws54 = _get_ws(wb, '54_Project_Dataset_on_SF')
@@ -430,26 +469,16 @@ def load_databricks_context(path: str) -> DatabricksContext:
                 ctx.sf_daily_target_spend      = _s55_raw('daily_target_spend__c')
                 ctx.sf_target_roas             = _s55_raw('Target_ROAS__c')
                 ctx.sf_sales_concentration     = _s55('Sales_Concentration__c')
-                ctx.sf_commodity_or_brand      = _s55('Commodity_or_Brand__c')
-                ctx.sf_reseller                = _s55('Reseller__c')
-                ctx.sf_top_priority            = _s55('Top_Priority_for_the_Upcoming_Quarter__c')
-                ctx.sf_second_priority         = _s55('Second_Priority_for_the_Upcoming_Quarter__c')
+                ctx.sf_commodity_or_brand      = _s55('Commodity_or_Brand__c')       # not confirmed in export — may be blank
+                ctx.sf_reseller                = _s55('Reseller__c')                  # not confirmed in export — may be blank
+                ctx.sf_top_priority            = _s55('Top_Priority__c')              # confirmed column name in tab 55
+                ctx.sf_second_priority         = _s55('Second_Priority__c')           # confirmed column name in tab 55
                 ctx.sf_expansion_opportunity   = _s55('Biggest_Expansion_Opportunity__c')
 
-                # CJM identity and dates
-                ctx.cjm_id            = _s55('Customer_Journey_Map__c')
-                ctx.cjm_modified_date = _s55_raw('cjm_LastModifiedDate__c')  # may not exist
-                ctx.cjm_reviewed_date = _s55_raw('CGM_Last_Reviewed_Date__c')  # may not exist
-
-                # CJM stage data — build lists of length 4 (None for absent stages)
-                ctx.cjm_status     = [_s55(f'StatusS{i}__c') or None for i in range(1, 5)]
-                ctx.cjm_strategy   = [_s55(f'StrategyS{i}__c') or None for i in range(1, 5)]
-                ctx.cjm_adoption   = [_s55(f'AdoptionOrUpsellS{i}__c') or None for i in range(1, 5)]
-                ctx.cjm_intro_date = [_s55_raw(f'IntroductionDateS{i}__c') for i in range(1, 5)]
-                ctx.cjm_exec_date  = [_s55_raw(f'ExecutionDateS{i}__c') for i in range(1, 5)]
-                ctx.cjm_actual_completion = [
-                    _s55_raw(f'ActualCompletionDateStage{i}__c') for i in range(1, 5)
-                ]
+                # CJM modified date fallback from tab 55 (if tab 39 not loaded)
+                # Tab 39 is SSOT — this is only used if tab 39 failed to load
+                if ctx.cjm_modified_date is None:
+                    ctx.cjm_modified_date = _s55_raw('CJM_LastModifiedDate')
             else:
                 warnings.warn(
                     f'55_Salesforce_Consolidated_PreA has no data rows for {path}. '
