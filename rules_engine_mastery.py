@@ -740,22 +740,24 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
             all_issues = issues_flag + issues_partial
             fail_count = len(all_issues)
 
-            if fail_count == 0:
+            # Scoring: 0–2 issues → OK | 3–5 issues → PARTIAL | 6+ issues → FLAG
+            if fail_count <= 2:
                 r['C006'] = ControlResult(
                     'OK',
-                    f'Client Journey Map is complete. {cjm_label} {staleness_note} {reviewed_note} {status_summary}',
+                    f'Client Journey Map is complete. {cjm_label} {staleness_note} {reviewed_note} {status_summary}'
+                    + (f' Minor gap(s) noted: ' + ' | '.join(all_issues) if all_issues else ''),
                     WHY['C006'], SOURCES['C006']
                 )
-            elif issues_flag or fail_count >= 3:
+            elif fail_count <= 5:
                 r['C006'] = ControlResult(
-                    'FLAG',
-                    f'Client Journey Map has {len(all_issues)} issue(s). {cjm_label} {staleness_note} {reviewed_note} {status_summary} Issues: ' + ' | '.join(all_issues),
+                    'PARTIAL',
+                    f'Client Journey Map has {fail_count} issue(s). {cjm_label} {staleness_note} {reviewed_note} {status_summary} Issues: ' + ' | '.join(all_issues),
                     WHY['C006'], SOURCES['C006']
                 )
             else:
                 r['C006'] = ControlResult(
-                    'PARTIAL',
-                    f'Client Journey Map is linked but has {len(all_issues)} gap(s). {cjm_label} {staleness_note} {reviewed_note} {status_summary} Issues: ' + ' | '.join(all_issues),
+                    'FLAG',
+                    f'Client Journey Map has {fail_count} issue(s). {cjm_label} {staleness_note} {reviewed_note} {status_summary} Issues: ' + ' | '.join(all_issues),
                     WHY['C006'], SOURCES['C006']
                 )
 
