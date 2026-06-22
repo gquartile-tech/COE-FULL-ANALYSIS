@@ -210,6 +210,10 @@ class StrategyContext:
     # ── Pro Suite audiences (tab 51) ─────────────────────────────────────────
     has_prosuite_audiences: bool = False      # any campaign has HasAudience=True
     prosuite_audience_spend_pct: float = 0.0  # share of total spend with audience
+    prosuite_active: bool = False             # tab 51 has real data rows (not NO DATA) = ProSuite enabled
+
+    # ── BA campaign orders (tab 08) ───────────────────────────────────────────
+    ba_orders_30d: float = 0.0               # total orders across BA campaigns in period
 
     # ── SnS and Promo Management (tab 50) ────────────────────────────────────
     has_sns_active: bool = False       # SnS subscriptions active (ActiveSubscriptions > 0)
@@ -662,6 +666,7 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
         if prosuite_records and not any(
             'NO DATA' in str(list(r.values())).upper() for r in prosuite_records[:1]
         ):
+            ctx.prosuite_active = True
             total_ps_spend = sum(_safe_float(r.get('TotalSpend')) for r in prosuite_records)
             audience_spend = sum(
                 _safe_float(r.get('TotalSpend'))
@@ -738,8 +743,14 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
             spend_col    = 'AdSpend' if 'AdSpend' in df14.columns else None
 
             # max orders per ASIN — for S014 (no top seller check)
+            # Uses total orders proxy (TotalSales/AOV) when available; fallback to ad orders.
             if orders_col:
-                ctx.max_asin_orders_30d = float(df14[orders_col].fillna(0).max())
+                if has_total_sales and has_aov:
+                    aov_vals_max = df14['AOV'].fillna(0).replace(0, float('nan'))
+                    total_orders_proxy = (df14['TotalSales'].fillna(0) / aov_vals_max).fillna(df14[orders_col].fillna(0))
+                    ctx.max_asin_orders_30d = float(total_orders_proxy.max())
+                else:
+                    ctx.max_asin_orders_30d = float(df14[orders_col].fillna(0).max())
 
             # Global slow mover definition:
             # Use total orders proxy = TotalSales / AOV when both columns exist.
@@ -787,16 +798,23 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
                 )
 
             # ATM + BA overlap on high-velocity ASINs (>80 orders) — for S012/S013
+            # Uses total orders proxy (TotalSales/AOV) so organically-selling ASINs
+            # are correctly classified as high-velocity even with low ad order counts.
             if atm_col is not None and ba_col is not None and orders_col is not None:
                 has_atm_spend  = df14[atm_col].fillna(0) > 0
                 has_ba_spend   = df14[ba_col].fillna(0) > 0
-                high_velocity  = df14[orders_col].fillna(0) > 80
+                if has_total_sales and has_aov:
+                    aov_vals_ov = df14['AOV'].fillna(0).replace(0, float('nan'))
+                    overlap_orders = (df14['TotalSales'].fillna(0) / aov_vals_ov).fillna(df14[orders_col].fillna(0))
+                else:
+                    overlap_orders = df14[orders_col].fillna(0)
+                high_velocity  = overlap_orders > 80
                 overlap_mask   = has_atm_spend & has_ba_spend & high_velocity
                 ctx.atm_ba_overlap_count = int(overlap_mask.sum())
                 if ctx.atm_ba_overlap_count > 0:
                     ctx.atm_ba_overlap_asins = [
-                        f"{row['asin']} ({int(row[orders_col])} orders)"
-                        for _, row in df14.loc[overlap_mask].iterrows()
+                        f"{row['asin']} ({int(overlap_orders.loc[idx])} orders)"
+                        for idx, row in df14.loc[overlap_mask].iterrows()
                     ]
 
             # Catalog vs spending ASIN counts — for S022
@@ -960,6 +978,18 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
                             'pct_of_total': sp / total_spend_acct if total_spend_acct > 0 else 0.0,
                             'acos':         ac,
                         })
+
+            # BA campaign orders — for S045 gate (≥80 orders required)
+            orders_col08 = next(
+                (c for c in df08.columns if str(c).strip().lower() == 'orders'),
+                None
+            )
+            if sub_col08 and orders_col08:
+                ba_mask = df08[sub_col08].astype(str).str.upper() == 'BA'
+                if ba_mask.any():
+                    ctx.ba_orders_30d = float(
+                        _pd08.to_numeric(df08.loc[ba_mask, orders_col08], errors='coerce').fillna(0).sum()
+                    )
 
             # Both WATM and CatchAll active simultaneously — for S084
             # WATM: via SubType; CatchAll: Non-Quartile SubType + name pattern

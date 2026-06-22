@@ -1366,7 +1366,19 @@ def eval_C037(ctx: DatabricksContext) -> ControlResult:
     if tmp.empty:
         return ok("No ASIN data found for ATM coverage evaluation.", WHY)
 
-    tmp["_orders"] = tmp[orders].apply(as_float).fillna(0.0)
+    # Total orders proxy: TotalSales / AOV when both are available.
+    # This captures organically-selling ASINs that would be missed using ad orders alone.
+    # Fallback: ad Orders column when TotalSales or AOV is missing or zero.
+    has_total_sales = "TotalSales" in tmp.columns
+    has_aov = "AOV" in tmp.columns
+    if has_total_sales and has_aov:
+        aov_vals = tmp["AOV"].apply(as_float).replace(0, float("nan"))
+        tmp["_orders"] = (tmp["TotalSales"].apply(as_float).fillna(0) / aov_vals).fillna(
+            tmp[orders].apply(as_float).fillna(0.0)
+        )
+    else:
+        tmp["_orders"] = tmp[orders].apply(as_float).fillna(0.0)
+
     tmp["_orders_per_day"] = tmp["_orders"] / float(days)
     tmp["_atm"] = tmp[atm_spend].apply(as_float).fillna(0.0)
     tmp["_tier"] = tmp[tier].astype(str).str.strip().str.upper()
@@ -1418,7 +1430,20 @@ def eval_C038(ctx: DatabricksContext) -> ControlResult:
         return ok("No ASIN data found for ATM catalog evaluation.", WHY)
 
     total_asins = len(tmp)
-    tmp["_orders"] = tmp[orders].apply(as_float).fillna(0.0)
+
+    # Total orders proxy: TotalSales / AOV when both are available.
+    # Prevents organically-selling ASINs from being wrongly classified as low-velocity.
+    # Fallback: ad Orders column when TotalSales or AOV is missing or zero.
+    has_total_sales = "TotalSales" in tmp.columns
+    has_aov = "AOV" in tmp.columns
+    if has_total_sales and has_aov:
+        aov_vals = tmp["AOV"].apply(as_float).replace(0, float("nan"))
+        tmp["_orders"] = (tmp["TotalSales"].apply(as_float).fillna(0) / aov_vals).fillna(
+            tmp[orders].apply(as_float).fillna(0.0)
+        )
+    else:
+        tmp["_orders"] = tmp[orders].apply(as_float).fillna(0.0)
+
     tmp["_orders_per_day"] = tmp["_orders"] / float(days)
     tmp["_atm"] = tmp[atm_spend].apply(as_float).fillna(0.0)
 

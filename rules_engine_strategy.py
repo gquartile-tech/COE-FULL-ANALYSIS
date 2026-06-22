@@ -362,8 +362,9 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
         elif tacos_rising and ctx.tacos_trend_pp > 0.70 and ctx.total_spend >= 1000:
             flag('S020', 'PARTIAL')
 
-    # CPC path — independent of TACoS, fires even when S020 TACoS path is suppressed
-    if 'S020' not in flags and ctx.cpc_yoy_change_pct > 0 and ctx.total_spend >= 1000:
+    # CPC path — independent of TACoS, fires even when S020 TACoS path is suppressed.
+    # Suppressed for growth/expansion — rising CPCs are expected when scaling.
+    if 'S020' not in flags and not growth_or_expansion and ctx.cpc_yoy_change_pct > 0 and ctx.total_spend >= 1000:
         if ctx.cpc_yoy_change_pct >= 0.40:
             flag('S020', 'FLAG')
         elif ctx.cpc_yoy_change_pct >= 0.20:
@@ -488,8 +489,20 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
         flag('S041', 'PARTIAL')
 
     # S044 — SB category target expansion
+    # Requires: base built, no SB spend, product targeting exists.
+    # Gate: account spend ≥ $5,000 AND either OP or CAT_SP is performing below constraint.
     has_product_targeting_base = (ctx.has_op and ctx.pct_op > 0) or (ctx.has_cat_sp and ctx.total_spend > 500)
-    if base_built and ctx.spend_sb == 0 and has_product_targeting_base:
+    op_below_constraint = (
+        ctx.op_avg_acos > 0 and ctx.acos_constraint > 0
+        and ctx.op_avg_acos > (ctx.acos_constraint / 100)
+    )
+    catsp_below_constraint = (
+        getattr(ctx, 'catsp_avg_acos', 0) > 0 and ctx.acos_constraint > 0
+        and getattr(ctx, 'catsp_avg_acos', 0) > (ctx.acos_constraint / 100)
+    )
+    product_targeting_below_constraint = op_below_constraint or catsp_below_constraint
+    if (base_built and ctx.spend_sb == 0 and has_product_targeting_base
+            and ctx.total_spend >= 5000 and product_targeting_below_constraint):
         if declining_yoy:
             flag('S044', 'FLAG')
         elif above_acos_10:
@@ -498,8 +511,10 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
             flag('S044', 'FLAG')
 
     # S045 — BAK harvest stalled
-    # CHANGELOG: only flag when objective is Growth or Expansion
-    if ctx.bak_underfed and at_scale and growth_or_expansion:
+    # CHANGELOG: only flag when objective is Growth or Expansion AND BA campaigns
+    # have at least 80 orders in the period — accounts with BAK already launched
+    # or insufficient BA order volume should not be flagged.
+    if ctx.bak_underfed and at_scale and growth_or_expansion and ctx.ba_orders_30d >= 80:
         flag('S045', 'PARTIAL')
 
     # ── ADVANCED STRATEGIES ───────────────────────────────────────────────────
@@ -610,11 +625,14 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     # ── NEW DEPLOYS ───────────────────────────────────────────────────────────
 
     # S070 — CAT_SP Launch
+    # Spend gate uses OP spend specifically (pct_op × total_spend), not account total.
+    # This avoids flagging small accounts where OP is minimal even if account spend is low.
+    op_spend = ctx.pct_op * ctx.total_spend
     op_outperforming = (
         ctx.op_avg_acos > 0 and ctx.acos_actual > 0
         and ctx.op_avg_acos < ctx.acos_actual * 0.80
     )
-    if not ctx.has_cat_sp and ctx.total_spend > 500:
+    if not ctx.has_cat_sp and op_spend > 500:
         if op_outperforming and (growing_yoy or not above_acos):
             flag('S070', 'FLAG')
         elif op_outperforming and above_acos:
@@ -778,9 +796,11 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     # ── SPENDING FOCUS ────────────────────────────────────────────────────────
 
     # S108 — ProSuite AMC Audience Testing
-    if not ctx.has_prosuite_audiences and advanced_ready and growing_yoy:
+    # Only flags when ProSuite is active (tab 51 has real data) but audiences
+    # are not yet applied. Accounts without ProSuite enabled cannot act on this.
+    if ctx.prosuite_active and not ctx.has_prosuite_audiences and advanced_ready and growing_yoy:
         flag('S108', 'FLAG')
-    elif not ctx.has_prosuite_audiences and advanced_ready:
+    elif ctx.prosuite_active and not ctx.has_prosuite_audiences and advanced_ready:
         flag('S108', 'PARTIAL')
 
     # S109 — Inefficient ASIN Spend Reduction

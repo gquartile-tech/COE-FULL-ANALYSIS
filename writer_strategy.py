@@ -1832,6 +1832,7 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str) 
         'Brand':      'Brand',
         'Department': 'Department',
         'Category':   'Category',
+        'AOV':        'AOV',
     }
 
     data_row = 3
@@ -1855,7 +1856,12 @@ def write_strategy(pre_analysis_path: str, template_path: str, output_dir: str) 
             except: return 0.0
         tot_s = _sf(rec.get('TotalSales'))
         ad_s  = _sf(rec.get('AdSales'))
-        aov   = _sf(rec.get('AOV'))
+
+        # AOV resolution: tab 22 (Catalogue_Details) is primary — covers all ASINs
+        # regardless of ad activity. Tab 14 AOV is fallback for ASINs not in tab 22.
+        aov_22 = _sf(cat.get('AOV'))
+        aov_14 = _sf(rec.get('AOV'))
+        aov    = aov_22 if aov_22 > 0 else aov_14
 
         ci_units = col_idx.get('Total Units Ordered')
         if ci_units and aov > 0:

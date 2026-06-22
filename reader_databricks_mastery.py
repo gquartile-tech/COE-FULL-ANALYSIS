@@ -98,6 +98,8 @@ class DatabricksContext:
     cjm_actual_completion: list = None    # [ActualCompletionDateStage1..S4]
     cjm_modified_date: object = None
     cjm_reviewed_date: object = None
+    # ── Tab 37: Gong Call Insights (operational constraints field) ────────────
+    sf_operational_constraints: str = ''    # Operational_Constraints__c — free text or None
 
 
 def clean_text(v) -> str:
@@ -523,6 +525,21 @@ def load_databricks_context(path: str) -> DatabricksContext:
                 ctx.tags.extend([clean_text(x) for x in ctx.df14[c].dropna().tolist() if clean_text(x)])
 
     ctx.gap, ctx.last_call, ctx.prev_call = latest_gap_days(ctx.df37)
+
+    # --- Tab 37: Operational Constraints field ---
+    if ctx.df37 is not None and not ctx.df37.empty:
+        constraints_col = _find_col_name(
+            ctx.df37,
+            'Operational_Constraints__c',
+            'OperationalConstraints__c',
+            'OperationalConstraints',
+            'Operational Constraints',
+        )
+        if constraints_col:
+            raw_val = ctx.df37[constraints_col].dropna()
+            if not raw_val.empty:
+                ctx.sf_operational_constraints = clean_text(raw_val.iloc[-1])
+
     return ctx
 
 

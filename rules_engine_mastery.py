@@ -480,46 +480,37 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
 
     # -------------------------------------------------------------------------
     # C005 — Operational Constraints Awareness
-    # Operational_Constraints__c is not present in the Databricks export.
-    # The agent runs entirely on narrative signal scanning across objective,
-    # near-term, and challenges fields.
+    # Source: Operational_Constraints__c from tab 37 (37_Gong_Call_Insights_for_Sales).
+    #
+    # Binary presence + content quality check — no keyword inference.
+    # The question is: did the CSM formally document a constraint?
     #
     # Outcomes:
-    #   Strong signals found → FLAG (constraint exists and is not formally acknowledged)
-    #   Weak signals found   → PARTIAL (possible constraint worth reviewing)
-    #   No signals found     → OK (no constraints detected)
+    #   Field populated with meaningful content (≥6 words, not a filler) → OK
+    #   Field populated but too short or generic (e.g. "none", "n/a")    → PARTIAL
+    #   Field empty                                                        → OK
+    #     (absence = no constraint assumed; not a documentation failure)
     # -------------------------------------------------------------------------
+    oc = clean_text(ctx.sf_operational_constraints)
+    oc_lower = oc.lower().strip()
+    FILLER_VALUES = {'none', 'n/a', 'na', 'no', 'no constraints', 'no operational constraints', '-', 'tbd', 'n.a.'}
 
-    # Scan narrative fields for constraint signals
-    narrative = ' '.join([
-        clean_text(ctx.ay).lower(),
-        clean_text(ctx.am).lower(),
-        clean_text(ctx.bn).lower(),
-    ])
-    signals_found = [sig for sig in CONSTRAINT_SIGNALS if sig in narrative]
-    strong_signals = [s for s in signals_found if any(w in s for w in [
-        'restriction', 'restricted', 'cannot advertise', 'not allowed',
-        'compliance', 'intellectual property', 'logistics', 'cash flow',
-    ])]
-
-    if strong_signals:
-        signal_list = ', '.join(strong_signals[:3])
+    if not oc or oc_lower in FILLER_VALUES:
         r['C005'] = ControlResult(
-            'FLAG',
-            f'Constraint signals detected in the account narrative: {signal_list}. These suggest an operational constraint exists. Document it formally so any reviewer understands the limit before making changes.',
+            'OK',
+            'No operational constraints are documented. This is expected when none apply.',
             WHY['C005'], SOURCES['C005']
         )
-    elif signals_found:
-        signal_list = ', '.join(signals_found[:3])
+    elif len(oc.split()) < 6:
         r['C005'] = ControlResult(
             'PARTIAL',
-            f'Possible constraint signals detected in the account narrative: {signal_list}. Check whether these represent a real operational constraint and document them if so.',
+            f'Operational constraints field is populated but too brief to be useful: "{oc}". Add more detail so any reviewer understands the limit before making changes.',
             WHY['C005'], SOURCES['C005']
         )
     else:
         r['C005'] = ControlResult(
             'OK',
-            'No operational constraint signals detected in the objective, near-term, or challenges fields. No action needed.',
+            f'Operational constraints are formally documented: "{trim(oc, 200)}".',
             WHY['C005'], SOURCES['C005']
         )
 
@@ -740,24 +731,22 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
             all_issues = issues_flag + issues_partial
             fail_count = len(all_issues)
 
-            # Scoring: 0–2 issues → OK | 3–5 issues → PARTIAL | 6+ issues → FLAG
-            if fail_count <= 2:
+            if fail_count == 0:
                 r['C006'] = ControlResult(
                     'OK',
-                    f'Client Journey Map is complete. {cjm_label} {staleness_note} {reviewed_note} {status_summary}'
-                    + (f' Minor gap(s) noted: ' + ' | '.join(all_issues) if all_issues else ''),
+                    f'Client Journey Map is complete. {cjm_label} {staleness_note} {reviewed_note} {status_summary}',
                     WHY['C006'], SOURCES['C006']
                 )
-            elif fail_count <= 5:
+            elif issues_flag or fail_count >= 3:
                 r['C006'] = ControlResult(
-                    'PARTIAL',
-                    f'Client Journey Map has {fail_count} issue(s). {cjm_label} {staleness_note} {reviewed_note} {status_summary} Issues: ' + ' | '.join(all_issues),
+                    'FLAG',
+                    f'Client Journey Map has {len(all_issues)} issue(s). {cjm_label} {staleness_note} {reviewed_note} {status_summary} Issues: ' + ' | '.join(all_issues),
                     WHY['C006'], SOURCES['C006']
                 )
             else:
                 r['C006'] = ControlResult(
-                    'FLAG',
-                    f'Client Journey Map has {fail_count} issue(s). {cjm_label} {staleness_note} {reviewed_note} {status_summary} Issues: ' + ' | '.join(all_issues),
+                    'PARTIAL',
+                    f'Client Journey Map is linked but has {len(all_issues)} gap(s). {cjm_label} {staleness_note} {reviewed_note} {status_summary} Issues: ' + ' | '.join(all_issues),
                     WHY['C006'], SOURCES['C006']
                 )
 
@@ -929,10 +918,10 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
         else:
             r['C009'] = ControlResult('FLAG', 'No Gong meetings were found for this account. Client contact cadence cannot be confirmed.', WHY['C009'], SOURCES['C009'])
     else:
-        if ctx.gap <= 30:
-            r['C009'] = ControlResult('OK', f'Last two meetings were {ctx.gap} days apart ({ctx.prev_call.date()} → {ctx.last_call.date()}). Cadence is within the 30-day target.', WHY['C009'], SOURCES['C009'])
-        elif ctx.gap <= 60:
-            r['C009'] = ControlResult('PARTIAL', f'Last two meetings were {ctx.gap} days apart ({ctx.prev_call.date()} → {ctx.last_call.date()}). This is above the 30-day target.', WHY['C009'], SOURCES['C009'])
+        if ctx.gap <= 20:
+            r['C009'] = ControlResult('OK', f'Last two meetings were {ctx.gap} days apart ({ctx.prev_call.date()} → {ctx.last_call.date()}). Cadence is within the 20-day target.', WHY['C009'], SOURCES['C009'])
+        elif ctx.gap <= 45:
+            r['C009'] = ControlResult('PARTIAL', f'Last two meetings were {ctx.gap} days apart ({ctx.prev_call.date()} → {ctx.last_call.date()}). This is above the 20-day target.', WHY['C009'], SOURCES['C009'])
         else:
             r['C009'] = ControlResult('FLAG', f'Last two meetings were {ctx.gap} days apart ({ctx.prev_call.date()} → {ctx.last_call.date()}). This is a long gap — the account story may be out of date.', WHY['C009'], SOURCES['C009'])
 
