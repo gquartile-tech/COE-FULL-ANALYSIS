@@ -867,7 +867,8 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
         flag('S125', 'PARTIAL')
 
     # S126 — SD ATC Retargeting — GGS Section
-    if ctx.spend_sd > 0 and not has_atc and ctx.has_prosuite_audiences:
+    # Only fire if account is GGS AND has ProSuite audiences active
+    if ctx.spend_sd > 0 and not has_atc and ctx.ggs_status == 'Yes' and ctx.has_prosuite_audiences:
         flag('S126', 'PARTIAL')
 
     return flags

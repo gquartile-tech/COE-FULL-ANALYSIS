@@ -322,14 +322,15 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
             else:
                 r['C001'] = ControlResult('PARTIAL', 'Objective is written, but it is not anchored to a measurable target or specific KPI. Add a number or metric to make it actionable.', WHY['C001'], SOURCES['C001'])
         else:
-            # AY7 is OK — cross-check CSP field and objective context (check 1.5.2)
+            # AY7 is OK — narrative is the primary gate. SF fields are informational only.
             sf_obj_context = clean_text(ctx.sf_primary_objective_context)
+            sf_notes = []
             if not sf_obj:
-                r['C001'] = ControlResult('PARTIAL', 'Objective is documented in the account notes and is clear. However, the CSP Primary Objective field in Salesforce is empty — the Salesforce record is incomplete.', WHY['C001'], SOURCES['C001'])
+                sf_notes.append('CSP Primary Objective field in Salesforce is empty — fill it in to keep records aligned.')
             elif not sf_obj_context:
-                r['C001'] = ControlResult('PARTIAL', 'Primary objective is documented and the CSP field is populated. However, the CSP "Context on Primary Objective" field is empty. Add narrative context explaining how the client defines success.', WHY['C001'], SOURCES['C001'])
-            else:
-                r['C001'] = ControlResult('OK', 'Primary objective is documented and linked to a clear business outcome. CSP field and objective context are both populated.', WHY['C001'], SOURCES['C001'])
+                sf_notes.append('CSP "Context on Primary Objective" field in Salesforce is empty — add narrative context.')
+            sf_note_str = ' Note: ' + ' '.join(sf_notes) if sf_notes else ''
+            r['C001'] = ControlResult('OK', f'Primary objective is documented and linked to a clear business outcome.{sf_note_str}', WHY['C001'], SOURCES['C001'])
 
     # -------------------------------------------------------------------------
     # C002 — Objective vs Near-Term Alignment
@@ -395,16 +396,12 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
 
         csp_gap_note = ' Missing CSP fields — ' + '; '.join(csp_gaps) + '. These need to be filled in Salesforce.' if csp_gaps else ''
 
-        if n == total_possible and not csp_gaps:
+        if n == total_possible:
+            # Narrative is complete — CSP gaps are informational only, never downgrade
+            csp_note_str = ' Note: ' + csp_gap_note.strip() if csp_gaps else ''
             r['C002'] = ControlResult(
                 'OK',
-                f'Objective context covers all 6 elements: goal, KPI, constraint, timeframe, narrative depth, and conflict assessment.{conflict_note}{source_note}{csp_found_note}',
-                WHY['C002'], SOURCES['C002']
-            )
-        elif n == total_possible and csp_gaps:
-            r['C002'] = ControlResult(
-                'PARTIAL',
-                f'Objective context covers all 6 narrative elements.{conflict_note}{source_note}{csp_found_note}{csp_gap_note}',
+                f'Objective context covers all 6 elements: goal, KPI, constraint, timeframe, narrative depth, and conflict assessment.{conflict_note}{source_note}{csp_found_note}{csp_note_str}',
                 WHY['C002'], SOURCES['C002']
             )
         elif n >= 4 and has_timeframe:
@@ -452,11 +449,9 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
         if metric_target_count >= 2 and not has_barrier:
             r['C003'] = ControlResult('FLAG', f'The challenges field contains performance targets, not challenges. Replace the content with the actual blockers and issues the account is facing.{source_note}', WHY['C003'], SOURCES['C003'])
         elif has_specific:
-            if txt and not sf_chal:
-                # BN7 is OK but CSP field empty
-                r['C003'] = ControlResult('PARTIAL', f'Current challenges are documented with enough detail. However, the CSP Current Challenges field (Salesforce) is empty — the Salesforce record is incomplete.', WHY['C003'], SOURCES['C003'])
-            else:
-                r['C003'] = ControlResult('OK', f'Current challenges are documented with enough detail to understand the active account blockers.{source_note}', WHY['C003'], SOURCES['C003'])
+            # Narrative is good — SF field gap is informational only
+            sf_chal_note = ' Note: CSP Current Challenges field in Salesforce is empty — fill it in to keep records aligned.' if txt and not sf_chal else ''
+            r['C003'] = ControlResult('OK', f'Current challenges are documented with enough detail to understand the active account blockers.{source_note}{sf_chal_note}', WHY['C003'], SOURCES['C003'])
         elif len(eval_text.split()) >= 6:
             r['C003'] = ControlResult('PARTIAL', f'Challenges are written, but the description is too general. It does not clearly explain what is blocking the account today.{source_note}', WHY['C003'], SOURCES['C003'])
         else:
@@ -731,22 +726,22 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
             all_issues = issues_flag + issues_partial
             fail_count = len(all_issues)
 
-            if fail_count == 0:
+            if fail_count <= 3:
                 r['C006'] = ControlResult(
                     'OK',
-                    f'Client Journey Map is complete. {cjm_label} {staleness_note} {reviewed_note} {status_summary}',
+                    f'Client Journey Map is complete. {cjm_label} {staleness_note} {reviewed_note} {status_summary}' + (f' Minor gap(s): ' + ' | '.join(all_issues) if all_issues else ''),
                     WHY['C006'], SOURCES['C006']
                 )
-            elif issues_flag or fail_count >= 3:
+            elif fail_count <= 7:
                 r['C006'] = ControlResult(
-                    'FLAG',
-                    f'Client Journey Map has {len(all_issues)} issue(s). {cjm_label} {staleness_note} {reviewed_note} {status_summary} Issues: ' + ' | '.join(all_issues),
+                    'PARTIAL',
+                    f'Client Journey Map has {fail_count} gap(s). {cjm_label} {staleness_note} {reviewed_note} {status_summary} Issues: ' + ' | '.join(all_issues),
                     WHY['C006'], SOURCES['C006']
                 )
             else:
                 r['C006'] = ControlResult(
-                    'PARTIAL',
-                    f'Client Journey Map is linked but has {len(all_issues)} gap(s). {cjm_label} {staleness_note} {reviewed_note} {status_summary} Issues: ' + ' | '.join(all_issues),
+                    'FLAG',
+                    f'Client Journey Map has {fail_count} issue(s). {cjm_label} {staleness_note} {reviewed_note} {status_summary} Issues: ' + ' | '.join(all_issues),
                     WHY['C006'], SOURCES['C006']
                 )
 
@@ -965,7 +960,7 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
         gap = abs(actual_daily - daily_target) / daily_target if daily_target else None
         deviation_pct = f'{gap * 100:.0f}%' if gap is not None else 'unknown'
         direction = 'below' if actual_daily < daily_target else 'above'
-        checks.append('OK' if gap is not None and gap <= 0.20 else 'PARTIAL' if gap is not None and gap <= 0.40 else 'FLAG')
+        checks.append('OK' if gap is not None and gap <= 0.50 else 'PARTIAL' if gap is not None and gap <= 0.80 else 'FLAG')
         msgs.append(f'Spend target ${daily_target:.0f}/day ({target_source}) vs actual ${actual_daily:.0f}/day ({deviation_pct} {direction} target)')
 
     # Sub-check 2: ROAS target vs actual
