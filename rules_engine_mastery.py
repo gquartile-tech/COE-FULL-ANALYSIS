@@ -557,9 +557,9 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
         active_idx  = [i for i in defined_idx if cjm_statuses[i]]   # stages with a status set
         stage_count = len(defined_idx)
 
-        # If no stage data at all, fall back to binary presence check
+        # If no stage data at all: CJM record exists but has no content filled in → FLAG
         if stage_count == 0:
-            r['C006'] = ControlResult('OK', 'A Client Journey Map is linked to this account. Stage detail was not available for deeper evaluation.', WHY['C006'], SOURCES['C006'])
+            r['C006'] = ControlResult('FLAG', 'A Client Journey Map is linked to this account but all stage fields are blank. The CJM needs to be completed in Salesforce.', WHY['C006'], SOURCES['C006'])
         else:
             issues_flag    = []
             issues_partial = []

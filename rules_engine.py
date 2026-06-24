@@ -949,8 +949,15 @@ def eval_C021(ctx: DatabricksContext) -> ControlResult:
     if non_exempt.empty:
         return ok("All managed portfolios are exempt. Nothing to evaluate.", WHY)
 
-    # BudgetCap is stored as a string ('Daily') not a boolean — use _has_value.
-    active = non_exempt[non_exempt[col].apply(_has_value)].copy()
+    # IsBudgetCap can be True/False boolean or a string like 'Daily'.
+    # Use as_bool first; only fall back to _has_value for non-boolean strings.
+    def _is_budget_cap_active(x) -> bool:
+        b = as_bool(x)
+        if b is not None:
+            return b
+        return _has_value(x)
+
+    active = non_exempt[non_exempt[col].apply(_is_budget_cap_active)].copy()
     active_count = len(active)
 
     if active_count == 0:
