@@ -120,7 +120,6 @@ def write_results_to_template(
         col_what = None
         col_why = None
         col_notes = None
-        col_action = None
 
         for c in range(1, ws.max_column + 1):
             val = _safe_str(ws.cell(header_row, c).value).lower()
@@ -130,8 +129,6 @@ def write_results_to_template(
                 col_what = c
             elif "why it matters" in val:
                 col_why = c
-            elif "what you should do" in val or "should do" in val:
-                col_action = c
             elif "notes" in val or "intent" in val:
                 col_notes = c
 
@@ -181,7 +178,6 @@ def write_results_to_template(
             status_u = _safe_str(status).upper()
             what_s   = _safe_str(what)
             why_s    = _safe_str(why)
-            action_s = _safe_str(getattr(result, "action", None) or (result.get("action") if isinstance(result, dict) else None))
 
             # Column D — STATUS
             ws.cell(r, col_status).value = status_u if status_u else None
@@ -191,10 +187,6 @@ def write_results_to_template(
 
             # Column I — Why It Matters (always written)
             ws.cell(r, col_why).value = why_s if why_s else None
-
-            # What You Should Do — written when action text is present
-            if col_action and action_s:
-                ws.cell(r, col_action).value = action_s
 
             # Column N — Notes/Intent (FLAG/PARTIAL only, manual controls get fixed label)
             if cid_u in MANUAL_CONTROLS:

@@ -49,48 +49,9 @@ class DatabricksContext:
     proj_k: object = None
     proj_cs_notes: str = ''
     df02: Optional[pd.DataFrame] = None
-    df04: Optional[pd.DataFrame] = None
-    df05: Optional[pd.DataFrame] = None
     df07: Optional[pd.DataFrame] = None
     df14: Optional[pd.DataFrame] = None
     df37: Optional[pd.DataFrame] = None
-    # ── Last complete month KPIs (tab 04) ─────────────────────────────────────
-    lm_label: str = ''                  # e.g. 'May 2026'
-    lm_total_sales: Optional[float] = None
-    lm_ad_sales: Optional[float] = None
-    lm_ad_spend: Optional[float] = None
-    lm_acos: Optional[float] = None
-    lm_tacos: Optional[float] = None
-    lm_organic_sales: Optional[float] = None
-    # ── MoM: last complete month vs prior month (tab 04) ──────────────────────
-    mom_label: str = ''                 # e.g. 'May vs Apr 2026'
-    mom_total_sales_chg: Optional[float] = None   # (lm - pm) / pm
-    mom_ad_spend_chg: Optional[float] = None
-    mom_acos_chg: Optional[float] = None          # absolute pp change
-    mom_tacos_chg: Optional[float] = None
-    # ── QoQ: L3M vs P3M aggregates (tab 04) ──────────────────────────────────
-    l3m_label: str = ''                 # e.g. 'Mar–May 2026'
-    p3m_label: str = ''                 # e.g. 'Dec 2025–Feb 2026'
-    l3m_total_sales: Optional[float] = None
-    p3m_total_sales: Optional[float] = None
-    l3m_ad_spend: Optional[float] = None
-    p3m_ad_spend: Optional[float] = None
-    l3m_acos: Optional[float] = None   # weighted average
-    p3m_acos: Optional[float] = None
-    l3m_tacos: Optional[float] = None
-    p3m_tacos: Optional[float] = None
-    qoq_total_sales_chg: Optional[float] = None  # (l3m - p3m) / p3m
-    qoq_ad_spend_chg: Optional[float] = None
-    qoq_acos_chg: Optional[float] = None         # absolute pp change
-    qoq_tacos_chg: Optional[float] = None
-    # ── YoY: last complete month this year vs same month last year (tab 05) ───
-    yoy_label: str = ''                 # e.g. 'May 2026 vs May 2025'
-    yoy_total_sales_chg: Optional[float] = None
-    yoy_ad_spend_chg: Optional[float] = None
-    yoy_acos_chg: Optional[float] = None          # absolute pp change
-    yoy_tacos_chg: Optional[float] = None
-    yoy_lm_total_sales: Optional[float] = None    # this year last month
-    yoy_py_total_sales: Optional[float] = None    # prior year same month
     df26: Optional[pd.DataFrame] = None
     df27: Optional[pd.DataFrame] = None
     df28: Optional[pd.DataFrame] = None
@@ -317,8 +278,6 @@ def load_databricks_context(path: str) -> DatabricksContext:
     # --- Pass 1: bulk DataFrames via pandas ---
     with pd.ExcelFile(path, engine="calamine") as xl:
         df02 = _get_df_from_xl(xl, '02_Date_Range_KPIs__Date_Range_')
-        df04 = _get_df_from_xl(xl, '04_L24M_Monthly_Performance_Sum')
-        df05 = _get_df_from_xl(xl, '05_Monthly_Sales_YoY_Comparison')
         df07 = _get_df_from_xl(xl, '07_KPIs_by_Parent_ASIN_by_Month')
         df14 = _get_df_from_xl(xl, '14_Campaign_Performance_by_Adve')
         df37 = _get_df_from_xl(xl, '37_Gong_Call_Insights_for_Sales')
@@ -344,8 +303,6 @@ def load_databricks_context(path: str) -> DatabricksContext:
 
         # Attach DataFrames loaded in Pass 1
         ctx.df02 = df02
-        ctx.df04 = df04
-        ctx.df05 = df05
         ctx.df07 = df07
         ctx.df14 = df14
         ctx.df37 = df37
@@ -582,137 +539,6 @@ def load_databricks_context(path: str) -> DatabricksContext:
             raw_val = ctx.df37[constraints_col].dropna()
             if not raw_val.empty:
                 ctx.sf_operational_constraints = clean_text(raw_val.iloc[-1])
-
-    # --- Monthly KPI derivation (tab 04 + tab 05) ---
-    # Last complete month = last month whose period is strictly before window_end month.
-    # e.g. window_end = 2026-06-23 → last complete month = May 2026 (period 2026-05).
-    if ctx.df04 is not None and not ctx.df04.empty and ctx.window_end is not None:
-        try:
-            df04_work = ctx.df04.copy()
-            df04_work['Month'] = pd.to_datetime(df04_work['Month'], errors='coerce')
-            df04_work = df04_work.dropna(subset=['Month']).sort_values('Month')
-            current_period = pd.Period(ctx.window_end, 'M')
-            complete = df04_work[df04_work['Month'].dt.to_period('M') < current_period]
-
-            if len(complete) >= 1:
-                lm_row = complete.iloc[-1]
-                ctx.lm_label = lm_row['Month'].strftime('%b %Y')
-                ctx.lm_total_sales   = lm_row.get('TotalSales')
-                ctx.lm_ad_sales      = lm_row.get('AdSales')
-                ctx.lm_ad_spend      = lm_row.get('AdSpend')
-                ctx.lm_acos          = lm_row.get('ACoS')
-                ctx.lm_tacos         = lm_row.get('TACoS')
-                ctx.lm_organic_sales = lm_row.get('OrganicSales')
-
-                # MoM: last month vs the one before it
-                if len(complete) >= 2:
-                    pm_row = complete.iloc[-2]
-                    pm_label = pm_row['Month'].strftime('%b %Y')
-                    ctx.mom_label = f"{ctx.lm_label} vs {pm_label}"
-
-                    def _chg(a, b):
-                        try:
-                            a, b = float(a), float(b)
-                            return (a - b) / b if b != 0 else None
-                        except Exception:
-                            return None
-
-                    ctx.mom_total_sales_chg = _chg(lm_row.get('TotalSales'), pm_row.get('TotalSales'))
-                    ctx.mom_ad_spend_chg    = _chg(lm_row.get('AdSpend'), pm_row.get('AdSpend'))
-                    # ACoS/TACoS: absolute pp change (both already 0–1 decimals)
-                    try:
-                        ctx.mom_acos_chg  = float(lm_row.get('ACoS'))  - float(pm_row.get('ACoS'))
-                        ctx.mom_tacos_chg = float(lm_row.get('TACoS')) - float(pm_row.get('TACoS'))
-                    except Exception:
-                        pass
-
-            # QoQ: L3M (last 3 complete months) vs P3M (prior 3 months)
-            if len(complete) >= 6:
-                l3m = complete.iloc[-3:]
-                p3m = complete.iloc[-6:-3]
-                ctx.l3m_label = f"{l3m.iloc[0]['Month'].strftime('%b')}–{l3m.iloc[-1]['Month'].strftime('%b %Y')}"
-                ctx.p3m_label = f"{p3m.iloc[0]['Month'].strftime('%b')}–{p3m.iloc[-1]['Month'].strftime('%b %Y')}"
-
-                def _safe_sum(rows, col):
-                    try:
-                        return float(rows[col].sum())
-                    except Exception:
-                        return None
-
-                def _wavg_ratio(rows, num_col, den_col):
-                    """Weighted average of a ratio: sum(num) / sum(den)."""
-                    try:
-                        n = float(rows[num_col].sum())
-                        d = float(rows[den_col].sum())
-                        return n / d if d != 0 else None
-                    except Exception:
-                        return None
-
-                ctx.l3m_total_sales = _safe_sum(l3m, 'TotalSales')
-                ctx.p3m_total_sales = _safe_sum(p3m, 'TotalSales')
-                ctx.l3m_ad_spend    = _safe_sum(l3m, 'AdSpend')
-                ctx.p3m_ad_spend    = _safe_sum(p3m, 'AdSpend')
-                ctx.l3m_acos        = _wavg_ratio(l3m, 'AdSpend', 'AdSales')
-                ctx.p3m_acos        = _wavg_ratio(p3m, 'AdSpend', 'AdSales')
-                ctx.l3m_tacos       = _wavg_ratio(l3m, 'AdSpend', 'TotalSales')
-                ctx.p3m_tacos       = _wavg_ratio(p3m, 'AdSpend', 'TotalSales')
-
-                def _chg(a, b):
-                    try:
-                        a, b = float(a), float(b)
-                        return (a - b) / b if b != 0 else None
-                    except Exception:
-                        return None
-
-                ctx.qoq_total_sales_chg = _chg(ctx.l3m_total_sales, ctx.p3m_total_sales)
-                ctx.qoq_ad_spend_chg    = _chg(ctx.l3m_ad_spend, ctx.p3m_ad_spend)
-                try:
-                    ctx.qoq_acos_chg  = ctx.l3m_acos  - ctx.p3m_acos  if ctx.l3m_acos  and ctx.p3m_acos  else None
-                    ctx.qoq_tacos_chg = ctx.l3m_tacos - ctx.p3m_tacos if ctx.l3m_tacos and ctx.p3m_tacos else None
-                except Exception:
-                    pass
-        except Exception as _e:
-            warnings.warn(f'Monthly KPI derivation (tab 04) failed for {path}: {_e}')
-
-    # YoY: last complete month this year vs same month last year (tab 05)
-    if ctx.df05 is not None and not ctx.df05.empty and ctx.lm_label and ctx.window_end is not None:
-        try:
-            df05_work = ctx.df05.copy()
-            df05_work['Month'] = pd.to_datetime(df05_work['Month'], errors='coerce')
-            df05_work = df05_work.dropna(subset=['Month'])
-            # Match row where year == window_end.year and month == last complete month
-            lm_month = (pd.Period(ctx.window_end, 'M') - 1).month
-            lm_year  = (pd.Period(ctx.window_end, 'M') - 1).year
-            yoy_row_mask = (
-                (df05_work['Month'].dt.month == lm_month) &
-                (df05_work['Month'].dt.year  == lm_year)
-            )
-            yoy_rows = df05_work[yoy_row_mask]
-            if not yoy_rows.empty:
-                yr = yoy_rows.iloc[0]
-                py_label = f"{yr['Month'].strftime('%b')} {lm_year - 1}"
-                ctx.yoy_label = f"{ctx.lm_label} vs {py_label}"
-                ctx.yoy_lm_total_sales = yr.get('ThisYearTotalSales')
-                ctx.yoy_py_total_sales = yr.get('LastYearTotalSales')
-
-                def _yoy_chg(col_ty, col_ly):
-                    try:
-                        ty = float(yr.get(col_ty))
-                        ly = float(yr.get(col_ly))
-                        return (ty - ly) / ly if ly != 0 else None
-                    except Exception:
-                        return None
-
-                ctx.yoy_total_sales_chg = _yoy_chg('ThisYearTotalSales', 'LastYearTotalSales')
-                ctx.yoy_ad_spend_chg    = _yoy_chg('ThisYearAdSpend', 'LastYearAdSpend')
-                # ACoS/TACoS: absolute pp change
-                try:
-                    ctx.yoy_acos_chg  = float(yr.get('ThisYearACoS'))  - float(yr.get('LastYearACoS'))
-                    ctx.yoy_tacos_chg = float(yr.get('ThisYearTACoS')) - float(yr.get('LastYearTACoS'))
-                except Exception:
-                    pass
-        except Exception as _e:
-            warnings.warn(f'Monthly KPI derivation (tab 05 YoY) failed for {path}: {_e}')
 
     return ctx
 

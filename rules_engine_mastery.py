@@ -332,20 +332,6 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
             sf_note_str = ' Note: ' + ' '.join(sf_notes) if sf_notes else ''
             r['C001'] = ControlResult('OK', f'Primary objective is documented and linked to a clear business outcome.{sf_note_str}', WHY['C001'], SOURCES['C001'])
 
-    # Append last-month KPI snapshot to C001 regardless of narrative status.
-    # Gives the reviewer actual recent numbers alongside the objective check.
-    if ctx.lm_label and ctx.lm_total_sales is not None:
-        lm_parts = [f'Last month ({ctx.lm_label}): TotalSales ${ctx.lm_total_sales:,.0f}']
-        if ctx.lm_ad_spend is not None:
-            lm_parts.append(f'AdSpend ${ctx.lm_ad_spend:,.0f}')
-        if ctx.lm_acos is not None:
-            lm_parts.append(f'ACoS {ctx.lm_acos * 100:.1f}%')
-        if ctx.lm_tacos is not None:
-            lm_parts.append(f'TACoS {ctx.lm_tacos * 100:.1f}%')
-        lm_block = ' | '.join(lm_parts) + '.'
-        _c001 = r['C001']
-        r['C001'] = ControlResult(_c001.status, _c001.what + ' ' + lm_block, _c001.why, _c001.source)
-
     # -------------------------------------------------------------------------
     # C002 — Objective vs Near-Term Alignment
     # Primary source: AM7 narrative (ctx.am).
@@ -436,56 +422,6 @@ def _evaluate_all_inner(ctx: DatabricksContext) -> Dict[str, ControlResult]:
                 f'Objective context does not have enough detail. {len(missing)} of 6 element(s) missing: {", ".join(missing)}.{source_note}{csp_found_note}{csp_gap_note}',
                 WHY['C002'], SOURCES['C002']
             )
-
-    # Append MoM / QoQ / YoY performance trend block to C002.
-    # These are factual period comparisons from tab 04 (MoM, QoQ) and tab 05 (YoY).
-    # They never change the status — they give the reviewer the actual trend context
-    # to judge whether the near-term narrative is anchored in reality.
-    _trend_parts = []
-
-    def _fmt_chg_pct(v):
-        """Format a relative change as +X.X% or -X.X%."""
-        if v is None:
-            return 'n/a'
-        return f'+{v * 100:.1f}%' if v >= 0 else f'{v * 100:.1f}%'
-
-    def _fmt_pp(v):
-        """Format an absolute pp change as +X.Xpp or -X.Xpp."""
-        if v is None:
-            return 'n/a'
-        return f'+{v * 100:.1f}pp' if v >= 0 else f'{v * 100:.1f}pp'
-
-    # MoM
-    if ctx.mom_label and ctx.mom_total_sales_chg is not None:
-        _trend_parts.append(
-            f'MoM ({ctx.mom_label}): Sales {_fmt_chg_pct(ctx.mom_total_sales_chg)}'
-            + (f', Spend {_fmt_chg_pct(ctx.mom_ad_spend_chg)}' if ctx.mom_ad_spend_chg is not None else '')
-            + (f', ACoS {_fmt_pp(ctx.mom_acos_chg)}' if ctx.mom_acos_chg is not None else '')
-            + (f', TACoS {_fmt_pp(ctx.mom_tacos_chg)}' if ctx.mom_tacos_chg is not None else '')
-        )
-
-    # QoQ
-    if ctx.l3m_label and ctx.p3m_label and ctx.qoq_total_sales_chg is not None:
-        _trend_parts.append(
-            f'QoQ ({ctx.l3m_label} vs {ctx.p3m_label}): Sales {_fmt_chg_pct(ctx.qoq_total_sales_chg)}'
-            + (f', Spend {_fmt_chg_pct(ctx.qoq_ad_spend_chg)}' if ctx.qoq_ad_spend_chg is not None else '')
-            + (f', ACoS {_fmt_pp(ctx.qoq_acos_chg)}' if ctx.qoq_acos_chg is not None else '')
-            + (f', TACoS {_fmt_pp(ctx.qoq_tacos_chg)}' if ctx.qoq_tacos_chg is not None else '')
-        )
-
-    # YoY (same month last year)
-    if ctx.yoy_label and ctx.yoy_total_sales_chg is not None:
-        _trend_parts.append(
-            f'YoY ({ctx.yoy_label}): Sales {_fmt_chg_pct(ctx.yoy_total_sales_chg)}'
-            + (f', Spend {_fmt_chg_pct(ctx.yoy_ad_spend_chg)}' if ctx.yoy_ad_spend_chg is not None else '')
-            + (f', ACoS {_fmt_pp(ctx.yoy_acos_chg)}' if ctx.yoy_acos_chg is not None else '')
-            + (f', TACoS {_fmt_pp(ctx.yoy_tacos_chg)}' if ctx.yoy_tacos_chg is not None else '')
-        )
-
-    if _trend_parts:
-        _c002 = r['C002']
-        _trend_block = ' | '.join(_trend_parts) + '.'
-        r['C002'] = ControlResult(_c002.status, _c002.what + ' Trend — ' + _trend_block, _c002.why, _c002.source)
 
     # -------------------------------------------------------------------------
     # C003 — Account Challenges Documented
