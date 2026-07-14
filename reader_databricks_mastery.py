@@ -349,7 +349,9 @@ def load_databricks_context(path: str) -> DatabricksContext:
         ctx.am  = clean_text(_cell_val(row38, 'AM'))
         ctx.bn  = clean_text(_cell_val(row38, 'BN'))
         # Near_Term_and_Primary_Objective_Conflict__c — read by name from tab 38 (same field as tab 55)
-        _conflict_38 = df38[df38.columns[df38.columns.str.lower() == 'near_term_and_primary_objective_conflict__c'].tolist()[0]].iloc[0] if any(df38.columns.str.lower() == 'near_term_and_primary_objective_conflict__c') else None
+        _conflict_38 = None
+        if df38 is not None and any(df38.columns.str.lower() == 'near_term_and_primary_objective_conflict__c'):
+            _conflict_38 = df38[df38.columns[df38.columns.str.lower() == 'near_term_and_primary_objective_conflict__c'].tolist()[0]].iloc[0]
         ctx.sf_near_term_conflict = clean_text(_conflict_38) if _conflict_38 is not None and str(_conflict_38) != 'nan' else ''
         ctx.au  = clean_text(_cell_val(row38, 'AU'))
         ctx.bw  = clean_text(_cell_val(row38, 'BW')).upper()
