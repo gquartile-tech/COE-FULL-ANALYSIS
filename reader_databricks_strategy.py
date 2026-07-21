@@ -384,6 +384,29 @@ class StrategyContext:
     # ── S087/S088/S089 — bulk campaign type spend shares ─────────────────────
     pct_cat_sp: float = 0.0               # CAT_SP_ spend as fraction of total
 
+    # ── OPD — defensive product targeting (split from OP by platform update) ──
+    spend_opd: float = 0.0             # OPD spend from tab 10
+    pct_opd: float = 0.0               # OPD share of total spend (tab 10 Perc_Spend)
+    has_opd: bool = False              # any OPD campaigns on tab 10
+    opd_campaign_count: int = 0        # count of OPD campaigns (tab 08)
+    opd_avg_acos: float = 0.0          # avg ACoS of OPD campaigns (tab 08)
+
+    # ── SP layer mix (tab 10) — Pod Playbook framework ────────────────────────
+    # Granular = ATM+BR+OP+OW+PH · Bulk = BA+BAK+CAT_SP · Defensive = WATM+SPT+OPD+SD_SPT
+    gran_spend_pct: float = 0.0        # granular layer share of SP layer spend
+    bulk_spend_pct: float = 0.0        # bulk layer share of SP layer spend
+    def_spend_pct: float = 0.0         # defensive layer share of SP layer spend
+    sp_layer_spend: float = 0.0        # total spend across the 12 layer subtypes
+    gran_campaign_count: int = 0       # granular campaigns with spend in period (tab 08)
+    gran_median_orders: float = 0.0    # median orders per granular campaign in period (tab 08)
+
+    # ── Pod mapping (tab 43) ──────────────────────────────────────────────────
+    main_category: str = ''            # Amazon main category from tab 43 'Your Category'
+
+    # ── S035 best-seller spend concentration (tab 14) ─────────────────────────
+    tier1_sales_pct: float = 0.0       # Tier 10-30 share of total sales (TotalSales)
+    tier1_core_spend_pct: float = 0.0  # Tier 10-30 ATM+BA+BAK spend share of total AdSpend
+
 
 # ── main reader ───────────────────────────────────────────────────────────────
 
@@ -526,6 +549,25 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
     ctx.spend_sbv          = _spend('SBV')
     ctx.spend_sd           = sum(_safe_float(subtype_map[k].get('Spend')) for k in _sd_keys)
 
+    # OPD — defensive product targeting, distinct CampaignSubType since platform update
+    ctx.pct_opd   = _pct('OPD')
+    ctx.spend_opd = _spend('OPD')
+    ctx.has_opd   = 'OPD' in subtype_map
+
+    # SP layer mix — Pod Playbook framework
+    _gran_keys = ('ATM', 'BR', 'OP', 'OW', 'PH')
+    _bulk_keys = ('BA', 'BAK', 'CAT_SP')
+    _def_keys  = ('WATM', 'SPT', 'OPD', 'SD_SPT')
+    _gran_spend = sum(_spend(k) for k in _gran_keys)
+    _bulk_spend = sum(_spend(k) for k in _bulk_keys)
+    _def_spend  = sum(_spend(k) for k in _def_keys)
+    _layer_total = _gran_spend + _bulk_spend + _def_spend
+    ctx.sp_layer_spend = _layer_total
+    if _layer_total > 0:
+        ctx.gran_spend_pct = _gran_spend / _layer_total
+        ctx.bulk_spend_pct = _bulk_spend / _layer_total
+        ctx.def_spend_pct  = _def_spend  / _layer_total
+
     # ── tab 08 — campaign names ───────────────────────────────────────────────
     camp_records = _tab_to_records(pa['08_Campaign_Report'])
     names = [_safe_str(r.get('CampaignName')) for r in camp_records if r.get('CampaignName')]
@@ -639,6 +681,23 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
             if _safe_str(r.get('CampaignType')) == 'Sponsored Brands'
         )
 
+    # ── tab 43 — cohort main category (pod mapping source) ────────────────────
+    try:
+        _t43_key = next((n for n in pa.sheetnames if str(n).startswith('43_')), None)
+        if _t43_key:
+            _t43_records = _tab_to_records(pa[_t43_key])
+            if _t43_records:
+                _cat_col = next(
+                    (k for k in _t43_records[0].keys()
+                     if re.sub(r'[\s_]', '', str(k)).lower() == 'yourcategory'),
+                    None)
+                if _cat_col:
+                    _cat_val = _safe_str(_t43_records[0].get(_cat_col))
+                    if _cat_val and _cat_val.upper() not in ('NAN', 'NONE'):
+                        ctx.main_category = _cat_val
+    except Exception:
+        pass
+
     # ── tab 50 — promo ────────────────────────────────────────────────────────
     promo_records = _tab_to_records(pa['50_Promo_Management___Account_T'])
     ctx.has_active_promo = any(
@@ -696,6 +755,22 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
     ctx.tier1_with_atm   = sum(
         1 for r in tier1 if _safe_float(r.get('ATM_Spend')) > 0
     )
+
+    # S035 — best-seller spend concentration.
+    # Tier 10-30 share of total sales vs their combined ATM+BA+BAK spend share.
+    _total_sales_14 = sum(_safe_float(r.get('TotalSales')) for r in asin_records)
+    _total_spend_14 = sum(_safe_float(r.get('AdSpend')) for r in asin_records)
+    if _total_sales_14 > 0:
+        _t1_sales = sum(_safe_float(r.get('TotalSales')) for r in tier1)
+        ctx.tier1_sales_pct = _t1_sales / _total_sales_14
+    if _total_spend_14 > 0:
+        _t1_core_spend = sum(
+            _safe_float(r.get('ATM_Spend'))
+            + _safe_float(r.get('BA_Spend'))
+            + _safe_float(r.get('BAK_Spend'))
+            for r in tier1
+        )
+        ctx.tier1_core_spend_pct = _t1_core_spend / _total_spend_14
     # NEW: count unique parent ASINs across all tiers to detect single-ASIN accounts
     parent_asins = set(
         _safe_str(r.get('ParentASIN'))
@@ -742,6 +817,9 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
             orders_col   = 'Orders' if 'Orders' in df14.columns else None
             spend_col    = 'AdSpend' if 'AdSpend' in df14.columns else None
 
+            has_total_sales = 'TotalSales' in df14.columns
+            has_aov = 'AOV' in df14.columns
+
             # max orders per ASIN — for S014 (no top seller check)
             # Uses total orders proxy (TotalSales/AOV) when available; fallback to ad orders.
             if orders_col:
@@ -757,8 +835,6 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
             # This prevents ad-only slow movers from being flagged when the ASIN
             # sells well organically (e.g. 1 ad order but 15 total orders).
             # Fallback: use ad Orders directly when TotalSales or AOV is missing.
-            has_total_sales = 'TotalSales' in df14.columns
-            has_aov = 'AOV' in df14.columns
             if orders_col and has_total_sales and has_aov:
                 aov_vals = df14['AOV'].fillna(0).replace(0, float('nan'))
                 est_total_orders = (df14['TotalSales'].fillna(0) / aov_vals).fillna(0)
@@ -927,6 +1003,7 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
             ctx.ow_campaign_count = _subtype_count08('OW',  'OW_')
             ctx.ph_campaign_count = _subtype_count08('PH',  'PH_')
             ctx.op_campaign_count = _subtype_count08('OP',  'OP_')
+            ctx.opd_campaign_count = _subtype_count08('OPD', 'OPD_')
 
             # Resolve spend and orders columns — used by multiple blocks below
             orders_col08 = 'Orders' if 'Orders' in df08.columns else None
@@ -1024,6 +1101,26 @@ def read_strategy_context(pre_analysis_path: str) -> StrategyContext:
             ctx.sbv_avg_acos     = _subtype_acos('SBV',     'SBV_')
             ctx.op_avg_acos      = _subtype_acos('OP',      'OP_')
             ctx.catsp_avg_acos   = _subtype_acos('CAT_SP',  'CAT_SP_')
+            ctx.opd_avg_acos     = _subtype_acos('OPD',     'OPD_')
+
+            # Granular conversion density — isolation gate signal (Pod Playbook)
+            try:
+                if sub_col08:
+                    _gran_mask08 = df08[sub_col08].astype(str).str.upper().isin(
+                        ('ATM', 'BR', 'OP', 'OW', 'PH'))
+                    _ord_col08 = next(
+                        (c for c in df08.columns if str(c).strip().lower() == 'orders'), None)
+                    if _ord_col08 is not None and spend_col08:
+                        _g_spend = _pd08.to_numeric(
+                            df08.loc[_gran_mask08, spend_col08], errors='coerce').fillna(0)
+                        _g_orders = _pd08.to_numeric(
+                            df08.loc[_gran_mask08, _ord_col08], errors='coerce').fillna(0)
+                        _active = _g_spend > 0
+                        ctx.gran_campaign_count = int(_active.sum())
+                        if _active.any():
+                            ctx.gran_median_orders = float(_g_orders[_active].median())
+            except Exception:
+                pass
 
             # VCPM spend share per SD subtype — used by S063/064/065 to suppress
             # outperforming signals when VCPM campaigns dominate the subtype.

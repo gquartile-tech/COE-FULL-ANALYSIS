@@ -81,6 +81,30 @@ S101: Converted to MANUAL. Already evaluated in Mastery and Framework pillars.
 S109: Suppressed for growth AND expansion objectives (was expansion only).
 S110: New PARTIAL path when branded search term spend < 5% target and SB > 5% of spend.
       Branded share note added to what_we_saw when below target.
+
+Pod Playbook + objective-aware update (this version)
+────────────────────────────────────────────────────
+OPD:  Split from OP per platform update. OP stays strictly offensive product
+      targeting; OPD is defensive (own-page) and counts toward the Defensive
+      layer, never toward OP metrics or OP-outperforming gates.
+S042: NEW — SP Layer Mix vs Pod Target. Granular/Bulk/Defensive spend mix from
+      tab 10 vs pod-specific red-flag thresholds (tab 43 category → pod).
+      FMCG exception: flagged on Defensive floor <14%. Generic thresholds when
+      pod is not identified. Defensive layer <8% on a funded account → PARTIAL.
+S006/S008/S021/S035/S061/S097: implemented per template HOW specs (previously
+      marked AUTO in template but never evaluated — writer was silently
+      pre-filling OK).
+Objective modes: one resolver (growth / profit / recovery / maintenance /
+      brand / neutral). Profit tightens S022, S030, S053-S055, S086-S089,
+      S098/S099, S109, S042 and gates all launch suggestions behind ACoS
+      headroom. Growth escalates S009, S023, S038 and loosens launch
+      outperforming gates (0.80 → 0.90). Recovery/Maintenance suppress all
+      launch/expansion suggestions. Brand spares SB/SD efficiency pressure
+      (S054/S055/S088/S089). Maintenance escalates S006 drift. Neutral =
+      unchanged behaviour. Objective framing sentence appended to affected
+      what_we_saw texts.
+S113/S119: retention-primary pods (FMCG, Pet) → S&S absence is FLAG regardless
+      of YoY. Subscriber LTV, not ROAS, is the primary KPI for these pods.
 """
 
 from __future__ import annotations
@@ -89,6 +113,92 @@ import re
 from typing import Optional
 
 from reader_databricks_strategy import StrategyContext
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pod Playbook tables — SP layer mix framework (18-month portfolio data)
+# Granular = ATM+BR+OP+OW+PH · Bulk = BA+BAK+CAT_SP · Defensive = WATM+SPT+OPD+SD_SPT
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CATEGORY_TO_POD = {
+    'HEALTH & HOUSEHOLD':            'Health & Wellness',
+    'HEALTH, HOUSEHOLD & BABY CARE': 'Health & Wellness',
+    'BEAUTY & PERSONAL CARE':        'Beauty & Personal Care',
+    'GROCERY & GOURMET FOOD':        'FMCG',
+    'PET SUPPLIES':                  'Pet',
+    'TOYS & GAMES':                  'Toys & Kids',
+    'SPORTS & OUTDOORS':             'Sports & Outdoors',
+    'ELECTRONICS':                   'Tech & Electronics',
+    'COMPUTERS & ACCESSORIES':       'Tech & Electronics',
+    'CAMERA & PHOTO':                'Tech & Electronics',
+    'CELL PHONES & ACCESSORIES':     'Tech & Electronics',
+    'CLOTHING, SHOES & JEWELRY':     'Fashion & Accessories',
+    'WATCHES':                       'Fashion & Accessories',
+    'HOME & KITCHEN':                'Home & Living',
+    'KITCHEN & DINING':              'Home & Living',
+    'FURNITURE':                     'Home & Living',
+    'PATIO, LAWN & GARDEN':          'Home & Living',
+    'TOOLS & HOME IMPROVEMENT':      'Home & Living',
+    'APPLIANCES':                    'Home & Living',
+    'AUTOMOTIVE':                    'B2B & Industrial',
+    'INDUSTRIAL & SCIENTIFIC':       'B2B & Industrial',
+    'OFFICE PRODUCTS':               'B2B & Industrial',
+}
+
+# Granular-% red-flag threshold per pod (spend share, 0-1).
+# FMCG is the exception pod: flagged on Defensive floor, not granular ceiling.
+_POD_GRAN_REDFLAG = {
+    'B2B & Industrial':       0.62,
+    'Beauty & Personal Care': 0.66,
+    'Fashion & Accessories':  0.46,
+    'Health & Wellness':      0.70,
+    'Home & Living':          0.55,
+    'Pet':                    0.60,
+    'Sports & Outdoors':      0.50,
+    'Tech & Electronics':     0.55,
+    'Toys & Kids':            0.55,
+}
+
+# Recommended Granular / Bulk / Defensive ranges per pod (display text).
+_POD_REC_MIX = {
+    'B2B & Industrial':       '50-58% / 25-32% / 14-18%',
+    'Beauty & Personal Care': '55-62% / 18-25% / 16-20%',
+    'FMCG':                   '55-63% / 18-25% / 16-20%',
+    'Fashion & Accessories':  '32-40% / 42-50% / 14-18%',
+    'Health & Wellness':      '55-62% / 20-26% / 15-19%',
+    'Home & Living':          '36-44% / 34-42% / 18-24%',
+    'Pet':                    '40-48% / 30-38% / 16-22%',
+    'Sports & Outdoors':      '24-32% / 42-50% / 22-28%',
+    'Tech & Electronics':     '38-46% / 32-38% / 18-24%',
+    'Toys & Kids':            '32-40% / 40-48% / 16-22%',
+}
+
+# Generic thresholds when the pod cannot be identified.
+# Evidence: top ROAS quartile averages 45/35/20; bottom quartile 66/22/11.
+_GENERIC_GRAN_REDFLAG = 0.66
+_GENERIC_GRAN_PARTIAL = 0.55
+
+# Retention-primary pods: subscriber LTV, not ROAS, is the primary KPI.
+_RETENTION_PODS = ('FMCG', 'Pet')
+
+
+def _resolve_pod(main_category: str) -> str:
+    """Amazon main category → Pod Playbook pod. '' when unmapped."""
+    if not main_category:
+        return ''
+    return _CATEGORY_TO_POD.get(main_category.strip().upper(), '')
+
+
+def _tech_belt(asin_count: int) -> str:
+    if asin_count <= 0:
+        return 'unknown'
+    if asin_count < 20:
+        return '<20 ASINs'
+    if asin_count <= 250:
+        return '20-250 ASINs'
+    if asin_count <= 1000:
+        return '250-1000 ASINs'
+    return '1000+ ASINs'
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -217,6 +327,29 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     high_concentration = 'High' in ctx.sales_concentration
     growth_or_expansion = obj_growth or obj_expansion
 
+    # ── objective mode — one resolver drives all objective-aware logic ────────
+    # neutral = objective not set or unrecognised → current behaviour, no change.
+    if growth_or_expansion:
+        obj_mode = 'growth'
+    elif obj_profit:
+        obj_mode = 'profit'
+    elif obj_recovery:
+        obj_mode = 'recovery'
+    elif obj_maintenance:
+        obj_mode = 'maintenance'
+    elif obj_brand or obj_ntb:
+        obj_mode = 'brand'
+    else:
+        obj_mode = 'neutral'
+    ctx._obj_mode = obj_mode
+    acos_within = has_constraint and not above_acos
+
+    # ── pod resolution — Pod Playbook layer framework ─────────────────────────
+    pod = _resolve_pod(ctx.main_category)
+    ctx._pod = pod
+    ctx._tech_belt = _tech_belt(ctx.catalog_asin_count)
+    retention_pod = pod in _RETENTION_PODS
+
     # ── ACOS AND TARGET ───────────────────────────────────────────────────────
 
     # S002 — ACoS target above constraint
@@ -242,7 +375,14 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
         flag('S005', 'PARTIAL')
 
     # S006 — ACoS Target Loosening Risk
-    # MANUAL — recommends ACoS target changes specific to the account. CSM reviews.
+    # FLAG: ACoS target increasing AND (ACoS above constraint OR YoY declining >5%).
+    # Loosening on a clean growing account is intentional → OK.
+    # Maintenance objective: loosening on a clean account is unexplained drift → PARTIAL.
+    if ctx.acos_direction == 'increasing':
+        if above_acos or ctx.yoy_ad_sales < -0.05:
+            flag('S006', 'FLAG')
+        elif obj_mode == 'maintenance':
+            flag('S006', 'PARTIAL')
 
     # S007 — Branded vs Non-Branded ACoS imbalance
     if (ctx.branded_acos > 0
@@ -253,7 +393,13 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
         flag('S007', 'FLAG')
 
     # S008 — OOB ACoS Reduction to Ease Pressure
-    # MANUAL — recommends account-specific ACoS reduction. CSM reviews.
+    # FLAG: OOB AND ACoS not decreasing AND above constraint.
+    # PARTIAL: OOB AND ACoS decreasing but still above constraint.
+    if ctx.has_oob and above_acos:
+        if ctx.acos_direction != 'decreasing':
+            flag('S008', 'FLAG')
+        else:
+            flag('S008', 'PARTIAL')
 
     # ── OVERALL STRUCTURE ─────────────────────────────────────────────────────
 
@@ -264,9 +410,10 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
         ctx.watm_campaign_count == 0 and not ctx.has_catchall,
         not any(re.search(r'SD_SPT', n, re.IGNORECASE) for n in ctx.campaign_names),
     ])
-    if _gaps >= 3 and (above_acos or declining_yoy):
+    _s009_pressure = above_acos or declining_yoy or obj_mode == 'growth'
+    if _gaps >= 3 and _s009_pressure:
         flag('S009', 'FLAG')
-    elif _gaps == 2 and (above_acos or declining_yoy):
+    elif _gaps == 2 and _s009_pressure:
         flag('S009', 'PARTIAL')
 
     # S010 — Slow movers in BA. Only fires when ATM-qualifying ASINs exist.
@@ -382,21 +529,39 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
             flag('S019', 'PARTIAL')
 
     # S021 — OOB — Budget Expansion Priority
-    # MANUAL — recommends budget increase or efficiency action specific to the account. CSM reviews.
+    # FLAG: OOB AND (ACoS above constraint OR TACoS above constraint) → fix efficiency first.
+    # FLAG: OOB AND both clean → efficient account fully utilising budget; negotiate expansion.
+    #       Profit objective: expansion on an efficiency account is PARTIAL, framed efficiency-first.
+    # PARTIAL: OOB AND MoM total sales declining.
+    if ctx.has_oob:
+        above_tacos_con = has_tacos_con and tacos_pp > tacos_con
+        if above_acos or above_tacos_con:
+            ctx._oob_case = 'inefficient'
+            flag('S021', 'FLAG')
+        elif has_constraint and not above_acos and (not has_tacos_con or not above_tacos_con):
+            ctx._oob_case = 'efficient'
+            flag('S021', 'PARTIAL' if obj_mode == 'profit' else 'FLAG')
+        elif ctx.mom_sales_change < 0:
+            ctx._oob_case = 'declining'
+            flag('S021', 'PARTIAL')
 
     # S022 — TACoS at risk level (absolute)
-    if ctx.tacos_actual > 0.50:
+    # Profit objective tightens thresholds: FLAG >40%, PARTIAL >25% (base: 50%/30%).
+    _s022_flag_thr    = 0.40 if obj_mode == 'profit' else 0.50
+    _s022_partial_thr = 0.25 if obj_mode == 'profit' else 0.30
+    if ctx.tacos_actual > _s022_flag_thr:
         flag('S022', 'FLAG')
-    elif ctx.tacos_actual > 0.30:
+    elif ctx.tacos_actual > _s022_partial_thr:
         flag('S022', 'PARTIAL')
 
     # S023 — Catalogue activation scope
+    # Growth objective escalates: <20% coverage on a growth account is off-objective → FLAG.
     if ctx.catalog_asin_count >= 10:
         coverage = ctx.spending_asin_count / ctx.catalog_asin_count
         if coverage < 0.10:
             flag('S023', 'FLAG')
         elif coverage < 0.20:
-            flag('S023', 'PARTIAL')
+            flag('S023', 'FLAG' if obj_mode == 'growth' else 'PARTIAL')
 
     # S024 — TACoS/ACoS divergence
     if (ctx.tacos_trend == 'increasing' and ctx.tacos_trend_pp > 1.5
@@ -406,7 +571,10 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     # ── BASIC STRATEGY ────────────────────────────────────────────────────────
 
     # S030 — Non-Quartile spend review
-    if non_qt_total > 0.40 or (non_qt_total > 0.20 and above_acos_10):
+    # Profit objective tightens the FLAG threshold to 30% — unmanaged spend is
+    # direct efficiency leakage on a profit-focused account.
+    _s030_thr = 0.30 if obj_mode == 'profit' else 0.40
+    if non_qt_total > _s030_thr or (non_qt_total > 0.20 and above_acos_10):
         flag('S030', 'FLAG')
     elif non_qt_total > 0.20:
         flag('S030', 'PARTIAL')
@@ -437,6 +605,14 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     # MANUAL — requires human review of which top-seller campaigns are paused and why.
 
     # ── CAMPAIGNS STRATEGY ────────────────────────────────────────────────────
+
+    # S035 — Best-Seller Spend Concentration
+    # Tier 10-30 ASINs carry the sales but not the spend. Gate: total spend >= $1,500.
+    if at_scale and ctx.tier1_asin_count > 0 and ctx.tier1_sales_pct > 0.40:
+        if ctx.tier1_core_spend_pct < 0.30:
+            flag('S035', 'FLAG')
+        elif ctx.tier1_core_spend_pct < 0.50:
+            flag('S035', 'PARTIAL')
 
     # S036 — Discovery-Performance Mix (ATM + BR both outperforming)
     # CHANGELOG: auto-flag positive composite.  Silences S056 + S057 when fired.
@@ -471,7 +647,8 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
         if ctx.pct_ba > 0.30 and ctx.pct_bak == 0 and not ctx.bak_name_overlaps_ba:
             flag('S038', 'FLAG')
         elif ctx.pct_ba > 0.30 and ctx.pct_bak == 0 and ctx.bak_name_overlaps_ba:
-            flag('S038', 'PARTIAL')
+            # Growth objective escalates — no harvest layer caps growth.
+            flag('S038', 'FLAG' if obj_mode == 'growth' else 'PARTIAL')
 
     # S039 — BA not segmented by category
     # CHANGELOG: also flag when only 1 BA campaign AND multiple categories each >10% of total sales
@@ -487,6 +664,33 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
         flag('S041', 'FLAG')
     elif at_scale and ctx.low_order_campaign_count > 40:
         flag('S041', 'PARTIAL')
+
+    # S042 — SP Layer Mix vs Pod Target (Pod Playbook)
+    # Granular = ATM+BR+OP+OW+PH · Bulk = BA+BAK+CAT_SP · Defensive = WATM+SPT+OPD+SD_SPT.
+    # Top ROAS quartile runs ~45/35/20; bottom quartile ~66/22/11 across 2,040 accounts.
+    # FLAG: granular share above the pod red-flag threshold.
+    # PARTIAL: within 5pp below threshold (10pp under Profit objective — fragmentation
+    #          is the primary efficiency killer on profit-focused accounts).
+    # FMCG exception pod: flagged on Defensive floor (<14%), not granular ceiling.
+    # Secondary: defensive layer near-absent (<8%) on a funded account → at least PARTIAL.
+    if ctx.sp_layer_spend >= 1500:
+        _gran = ctx.gran_spend_pct
+        _defp = ctx.def_spend_pct
+        _partial_window = 0.10 if obj_mode == 'profit' else 0.05
+        if pod == 'FMCG':
+            if _defp < 0.14:
+                flag('S042', 'FLAG')
+            elif _defp < 0.16:
+                flag('S042', 'PARTIAL')
+        else:
+            _thr = _POD_GRAN_REDFLAG.get(pod, _GENERIC_GRAN_REDFLAG)
+            _partial_floor = (_thr - _partial_window) if pod else _GENERIC_GRAN_PARTIAL
+            if _gran > _thr:
+                flag('S042', 'FLAG')
+            elif _gran > _partial_floor:
+                flag('S042', 'PARTIAL')
+            elif _defp < 0.08:
+                flag('S042', 'PARTIAL')
 
     # S044 — SB category target expansion
     # Requires: base built, no SB spend, product targeting exists.
@@ -530,27 +734,33 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     # S053 — SP Campaign ACoS Significantly Above Constraint (campaign-level)
     # Suppressed for growth/expansion objective — overspending campaigns are expected
     # when the account is actively scaling. Flag only on efficiency-focused accounts.
+    # Profit objective tightens tolerance: PARTIAL >10%, FLAG >25% (base: 20%/35%).
+    _cmp_flag_thr    = 0.25 if obj_mode == 'profit' else 0.35
+    _cmp_partial_thr = 0.10 if obj_mode == 'profit' else 0.20
     if has_constraint and ctx.sp_worst_campaign_acos > 0 and not growth_or_expansion:
         gap_ratio = (ctx.sp_worst_campaign_acos * 100 - constraint) / constraint
-        if gap_ratio > 0.35:
+        if gap_ratio > _cmp_flag_thr:
             flag('S053', 'FLAG')
-        elif gap_ratio > 0.20:
+        elif gap_ratio > _cmp_partial_thr:
             flag('S053', 'PARTIAL')
 
     # S054 — SB Campaign ACoS Significantly Above Constraint (campaign-level)
-    if has_constraint and ctx.sb_worst_campaign_acos > 0 and not growth_or_expansion:
+    # Brand Building / NTB objective spares upper-funnel efficiency pressure (SB/SD).
+    if (has_constraint and ctx.sb_worst_campaign_acos > 0
+            and not growth_or_expansion and obj_mode != 'brand'):
         gap_ratio = (ctx.sb_worst_campaign_acos * 100 - constraint) / constraint
-        if gap_ratio > 0.35:
+        if gap_ratio > _cmp_flag_thr:
             flag('S054', 'FLAG')
-        elif gap_ratio > 0.20:
+        elif gap_ratio > _cmp_partial_thr:
             flag('S054', 'PARTIAL')
 
     # S055 — SD Campaign ACoS Significantly Above Constraint (campaign-level)
-    if has_constraint and ctx.sd_worst_campaign_acos > 0 and not growth_or_expansion:
+    if (has_constraint and ctx.sd_worst_campaign_acos > 0
+            and not growth_or_expansion and obj_mode != 'brand'):
         gap_ratio = (ctx.sd_worst_campaign_acos * 100 - constraint) / constraint
-        if gap_ratio > 0.35:
+        if gap_ratio > _cmp_flag_thr:
             flag('S055', 'FLAG')
-        elif gap_ratio > 0.20:
+        elif gap_ratio > _cmp_partial_thr:
             flag('S055', 'PARTIAL')
 
     # S056 — ATM campaigns outperforming (positive suggestion)
@@ -586,6 +796,14 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     if ctx.op_avg_acos > 0 and ctx.acos_actual > 0 and ctx.op_avg_acos < ctx.acos_actual * 0.80:
         flag('S060', 'FLAG')
 
+    # S061 — Product Targeting Coverage
+    # BA + SPT + ATM all have spend AND no OP campaigns → product-page traffic layer
+    # is fully uncovered despite a multi-type structure. OPD does not fill this gap —
+    # OPD defends own listings; OP conquests competitor product pages.
+    if (ctx.spend_ba > 0 and ctx.spend_spt > 0 and ctx.spend_atm > 0
+            and ctx.op_campaign_count == 0):
+        flag('S061', 'PARTIAL')
+
     # S062 — Paused SB Campaign Rebuild
     if ctx.paused_sb_count > 0 and ctx.spend_sb == 0 and not above_acos and at_scale:
         flag('S062', 'PARTIAL')
@@ -611,11 +829,13 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
         flag('S065', 'FLAG')
 
     # S067 — SB Investment Opportunity
-    if ctx.sb_avg_acos > 0 and ctx.acos_actual > 0 and ctx.sb_avg_acos < ctx.acos_actual * 0.80:
+    # Growth objective loosens the outperforming gate (0.80 → 0.90) — fire more readily.
+    _outperf_ratio = 0.90 if obj_mode == 'growth' else 0.80
+    if ctx.sb_avg_acos > 0 and ctx.acos_actual > 0 and ctx.sb_avg_acos < ctx.acos_actual * _outperf_ratio:
         flag('S067', 'FLAG')
 
     # S068 — SBV Investment Opportunity
-    if ctx.sbv_avg_acos > 0 and ctx.acos_actual > 0 and ctx.sbv_avg_acos < ctx.acos_actual * 0.80:
+    if ctx.sbv_avg_acos > 0 and ctx.acos_actual > 0 and ctx.sbv_avg_acos < ctx.acos_actual * _outperf_ratio:
         flag('S068', 'FLAG')
 
     # S069 — SBV Campaign Reactivation
@@ -630,7 +850,7 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     op_spend = ctx.pct_op * ctx.total_spend
     op_outperforming = (
         ctx.op_avg_acos > 0 and ctx.acos_actual > 0
-        and ctx.op_avg_acos < ctx.acos_actual * 0.80
+        and ctx.op_avg_acos < ctx.acos_actual * _outperf_ratio
     )
     if not ctx.has_cat_sp and op_spend > 500:
         if op_outperforming and (growing_yoy or not above_acos):
@@ -646,7 +866,7 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     # CHANGELOG: also requires CAT_SP or OP outperforming (same gate as S070)
     catsp_outperforming = (
         ctx.catsp_avg_acos > 0 and ctx.acos_actual > 0
-        and ctx.catsp_avg_acos < ctx.acos_actual * 0.80
+        and ctx.catsp_avg_acos < ctx.acos_actual * _outperf_ratio
     )
     sb_well_established2 = ctx.pct_sb > 0.05 and not above_acos
     has_product_targeting_base2 = (ctx.has_op and ctx.pct_op > 0) or (ctx.has_cat_sp and ctx.total_spend > 500)
@@ -725,19 +945,21 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
                 flag('S086', 'FLAG')
                 break
             elif bak['pct_of_total'] > 0.15 and bak['acos'] > (constraint / 100) * 0.80:
-                flag('S086', 'PARTIAL')
+                flag('S086', 'FLAG' if obj_mode == 'profit' else 'PARTIAL')
 
     # S087 — CAT_SP high-spend with efficiency pressure
     if has_constraint and ctx.pct_cat_sp > 0.15 and acos_pp > constraint * 0.50:
-        flag('S087', 'PARTIAL')
+        flag('S087', 'FLAG' if obj_mode == 'profit' else 'PARTIAL')
 
     # S088 — SB high-spend with efficiency pressure
-    if has_constraint and ctx.pct_sb > 0.15 and acos_pp > constraint * 0.50:
-        flag('S088', 'PARTIAL')
+    if (has_constraint and ctx.pct_sb > 0.15 and acos_pp > constraint * 0.50
+            and obj_mode != 'brand'):
+        flag('S088', 'FLAG' if obj_mode == 'profit' else 'PARTIAL')
 
     # S089 — SBV high-spend with efficiency pressure
-    if has_constraint and ctx.pct_sbv > 0.15 and acos_pp > constraint * 0.50:
-        flag('S089', 'PARTIAL')
+    if (has_constraint and ctx.pct_sbv > 0.15 and acos_pp > constraint * 0.50
+            and obj_mode != 'brand'):
+        flag('S089', 'FLAG' if obj_mode == 'profit' else 'PARTIAL')
 
     # ── ADVANCED CAMPAIGNS ────────────────────────────────────────────────────
 
@@ -768,16 +990,22 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     # ── GOVERNANCE ON FRAMEWORK ───────────────────────────────────────────────
 
     # S097 — Portfolio Governance — Unused Portfolios
-    # MANUAL — portfolio governance requires human review of naming and structure.
-    # Do not auto-flag. CSM reviews this manually during QR call.
+    # Only evaluated when >15% of campaigns are assigned to portfolios.
+    # FLAG: >3 portfolios AND none with a budget cap.
+    # PARTIAL: portfolios exist AND none managed.
+    if ctx.campaigns_in_portfolio_pct > 0.15:
+        if ctx.portfolio_count > 3 and ctx.portfolios_with_budget_cap == 0:
+            flag('S097', 'FLAG')
+        elif ctx.portfolio_count > 0 and ctx.managed_portfolio_count == 0:
+            flag('S097', 'PARTIAL')
 
     # S098 — Campaign-Level ACoS Overrides Active
     if ctx.has_campaign_acos_overrides and above_acos:
-        flag('S098', 'PARTIAL')
+        flag('S098', 'FLAG' if obj_mode == 'profit' else 'PARTIAL')
 
     # S099 — Product-Level ACoS Overrides Active
     if ctx.has_product_acos_overrides and above_acos:
-        flag('S099', 'PARTIAL')
+        flag('S099', 'FLAG' if obj_mode == 'profit' else 'PARTIAL')
 
     # S100 — VCPM Buy Box Requirement
     if ctx.vcpm_spend_pct > 0.10:
@@ -807,7 +1035,10 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     # CHANGELOG: auto rule — ASIN spending with zero sales OR ACoS > 2× constraint
     # Suppressed for growth AND expansion objectives — on scaling accounts, some ASINs
     # will have poor efficiency while building visibility. Flagging them creates noise.
-    if ctx.inefficient_asin_count > 0 and at_scale and not growth_or_expansion:
+    # Profit objective: gate lowered — even a small account leaking spend on
+    # zero-sale ASINs is off-objective when the goal is profitability.
+    _s109_scale = ctx.total_spend >= 750 if obj_mode == 'profit' else at_scale
+    if ctx.inefficient_asin_count > 0 and _s109_scale and not growth_or_expansion:
         flag('S109', 'FLAG')
 
     # S110 — SB Active — SBV Missing
@@ -827,8 +1058,10 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     # S113 — Recurring Sales Strategy
     # Suppressed when S119 (Subscribe & Save) already fires — same root cause, S119 is more specific
     # CHANGELOG: also fires when repeat_purchase is High (regardless of YoY)
+    # Retention-primary pods (FMCG, Pet): S&S absence is a FLAG regardless of YoY —
+    # subscriber LTV, not ROAS, is the primary KPI for these archetypes.
     if 'S119' not in flags and not ctx.has_sns_active and not repeat_low and not obj_ntb:
-        if declining_yoy or repeat_high:
+        if declining_yoy or repeat_high or retention_pod:
             flag('S113', 'FLAG')
         elif not growing_yoy:
             flag('S113', 'PARTIAL')
@@ -842,7 +1075,7 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     # S119 — Subscribe & Save — Not Active
     # CHANGELOG: also fires when repeat_purchase is High
     if not ctx.has_sns_active and not repeat_low and not obj_ntb:
-        if declining_yoy or repeat_high:
+        if declining_yoy or repeat_high or retention_pod:
             flag('S119', 'FLAG')
         else:
             flag('S119', 'PARTIAL')
@@ -870,6 +1103,22 @@ def _compute_flags(ctx: StrategyContext) -> dict[str, str]:
     # Only fire if account is GGS AND has ProSuite audiences active
     if ctx.spend_sd > 0 and not has_atc and ctx.ggs_status == 'Yes' and ctx.has_prosuite_audiences:
         flag('S126', 'PARTIAL')
+
+    # ── objective post-filter — launch and expansion suggestions ──────────────
+    # Recovery/Maintenance: an account that is recovering or holding steady should
+    # not be adding structures — suppress every launch/expansion suggestion.
+    # Profit: launches only fire when efficiency headroom exists (ACoS within
+    # constraint) — never suggest expansion on an account failing its target.
+    _LAUNCH_SIDS = {
+        'S044', 'S047', 'S061', 'S062', 'S064', 'S065', 'S067', 'S068', 'S069',
+        'S070', 'S071', 'S075', 'S092', 'S093', 'S096', 'S108', 'S110',
+    }
+    if obj_mode in ('recovery', 'maintenance'):
+        for _sid in _LAUNCH_SIDS:
+            flags.pop(_sid, None)
+    elif obj_mode == 'profit' and not acos_within:
+        for _sid in _LAUNCH_SIDS:
+            flags.pop(_sid, None)
 
     return flags
 
@@ -920,6 +1169,24 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
             f'ACoS target increased {ctx.acos_changes_30d} time(s) in the last 30 days. '
             f'Current target: {ctx.acos_current_target:.0f}%. '
             f'Spend growth driven by loosening efficiency — not by structural improvements.'
+        )
+
+    if _t('S006'):
+        texts['S006'] = (
+            f'The ACoS target has been increased recently. '
+            f'Current ACoS is {ctx.acos_actual:.0%} vs the {ctx.acos_constraint:.0f}% constraint, '
+            f'and ad sales are {ctx.yoy_ad_sales:+.0%} YoY. '
+            f'Spend growth is coming from a looser efficiency target, '
+            f'not from campaign or product structure improvements.'
+        )
+
+    if _t('S008'):
+        _s008_dir = 'is not being reduced' if ctx.acos_direction != 'decreasing' else 'is already being reduced'
+        texts['S008'] = (
+            f'The account hit daily budget limits, and ACoS is {ctx.acos_actual:.0%} '
+            f'vs the {ctx.acos_constraint:.0f}% constraint. '
+            f'The ACoS target {_s008_dir}. '
+            f'A lower ACoS target reduces CPC pressure and eases out-of-budget events.'
         )
 
     if _t('S007'):
@@ -1123,6 +1390,14 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
             f'Best-seller campaigns have likely been paused or were never fully deployed.'
         )
 
+    if _t('S035'):
+        texts['S035'] = (
+            f'The best-selling ASINs (Tier 10-30) generate {ctx.tier1_sales_pct:.0%} of total sales '
+            f'but receive only {ctx.tier1_core_spend_pct:.0%} of ad spend across ATM, BA, and BAK campaigns. '
+            f'Spend is spread too broadly across the catalog. '
+            f'Proven sellers should get coverage proportional to their sales contribution.'
+        )
+
     if _t('S036'):
         texts['S036'] = (
             f'ATM avg ACoS: {_pct(ctx.atm_avg_acos)} — {(1 - ctx.atm_avg_acos / ctx.acos_actual):.0%} better than account avg. '
@@ -1164,6 +1439,38 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
             f'Consolidate converting terms into BAK campaigns by parent ASIN.'
         )
 
+    if _t('S042'):
+        _pod_name = getattr(ctx, '_pod', '') or 'not identified'
+        _belt = getattr(ctx, '_tech_belt', 'unknown')
+        _rec = _POD_REC_MIX.get(getattr(ctx, '_pod', ''), '45-55% / 25-35% / 15-20%')
+        _gran_note = ''
+        if ctx.gran_campaign_count > 0:
+            _gran_note = (
+                f' The account runs {ctx.gran_campaign_count} granular campaigns with spend, '
+                f'with a median of {ctx.gran_median_orders:.1f} orders each in the period — '
+                f'around 30 orders per month are needed for reliable campaign-level optimization.'
+            )
+        if getattr(ctx, '_pod', '') == 'FMCG':
+            texts['S042'] = (
+                f'The defensive layer (WATM, SPT, OPD, SD_SPT) holds {ctx.def_spend_pct:.0%} of SP spend — '
+                f'below the 14% floor for FMCG accounts. '
+                f'Current mix: {ctx.gran_spend_pct:.0%} granular / {ctx.bulk_spend_pct:.0%} bulk / '
+                f'{ctx.def_spend_pct:.0%} defensive. '
+                f'Recommended for FMCG: {_rec} (granular / bulk / defensive).'
+                f'{_gran_note}'
+            )
+        else:
+            texts['S042'] = (
+                f'The granular layer (ATM, BR, OP, OW, PH) holds {ctx.gran_spend_pct:.0%} of SP spend. '
+                f'Current mix: {ctx.gran_spend_pct:.0%} granular / {ctx.bulk_spend_pct:.0%} bulk / '
+                f'{ctx.def_spend_pct:.0%} defensive. '
+                f'Account category: {_pod_name} ({_belt}). '
+                f'Recommended mix for this category: {_rec} (granular / bulk / defensive). '
+                f'Top-performing accounts run more spend through bulk campaigns — '
+                f'too many small granular campaigns splits the data and makes optimization unreliable.'
+                f'{_gran_note}'
+            )
+
     if _t('S044'):
         acos_pp = ctx.acos_actual * 100
         declining = ctx.yoy_ad_sales < -0.05
@@ -1192,29 +1499,26 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
 
     # S053 — SP Campaign ACoS Significantly Above Constraint
     if _t('S053') and ctx.sp_worst_campaign_acos > 0:
-        extra = f' {ctx.sp_campaigns_above_threshold - 1} additional SP campaign(s) are also above the threshold.' if ctx.sp_campaigns_above_threshold > 1 else ''
         texts['S053'] = (
             f'The worst SP campaign has an ACoS of {ctx.sp_worst_campaign_acos:.0%} '
             f'vs the {ctx.acos_constraint:.0f}% constraint. '
-            f'{ctx.sp_campaigns_above_threshold} SP campaign(s) are above the threshold.{extra}'
+            f'{ctx.sp_campaigns_above_threshold} SP campaign(s) in total are above the threshold.'
         )
 
     # S054 — SB Campaign ACoS Significantly Above Constraint
     if _t('S054') and ctx.sb_worst_campaign_acos > 0:
-        extra = f' {ctx.sb_campaigns_above_threshold - 1} additional SB campaign(s) are also above the threshold.' if ctx.sb_campaigns_above_threshold > 1 else ''
         texts['S054'] = (
             f'The worst SB campaign has an ACoS of {ctx.sb_worst_campaign_acos:.0%} '
             f'vs the {ctx.acos_constraint:.0f}% constraint. '
-            f'{ctx.sb_campaigns_above_threshold} SB campaign(s) are above the threshold.{extra}'
+            f'{ctx.sb_campaigns_above_threshold} SB campaign(s) in total are above the threshold.'
         )
 
     # S055 — SD Campaign ACoS Significantly Above Constraint
     if _t('S055') and ctx.sd_worst_campaign_acos > 0:
-        extra = f' {ctx.sd_campaigns_above_threshold - 1} additional SD campaign(s) are also above the threshold.' if ctx.sd_campaigns_above_threshold > 1 else ''
         texts['S055'] = (
             f'The worst SD campaign has an ACoS of {ctx.sd_worst_campaign_acos:.0%} '
             f'vs the {ctx.acos_constraint:.0f}% constraint. '
-            f'{ctx.sd_campaigns_above_threshold} SD campaign(s) are above the threshold.{extra}'
+            f'{ctx.sd_campaigns_above_threshold} SD campaign(s) in total are above the threshold.'
         )
 
     if _t('S056') and 'S036' not in flags:
@@ -1245,6 +1549,19 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
         texts['S060'] = (
             f'OP product-targeting avg ACoS: {_pct(ctx.op_avg_acos)} vs account avg {_pct(ctx.acos_actual)}. '
             f'Product-targeting outperforming — consider expanding OP_ coverage.'
+        )
+
+    if _t('S061'):
+        texts['S061'] = (
+            f'BA, SPT, and ATM campaigns all have active spend, but there are no OP product-targeting '
+            f'campaigns ({ctx.opd_campaign_count} OPD defensive campaigns do not cover this — '
+            f'they defend our own pages, not competitor pages). '
+            f'Shoppers browsing competitor product pages are not being reached. '
+            f'That traffic goes to competitors by default.'
+        ) if ctx.opd_campaign_count > 0 else (
+            f'BA, SPT, and ATM campaigns all have active spend, but there are no OP product-targeting '
+            f'campaigns. Shoppers browsing competitor product pages are not being reached. '
+            f'That traffic goes to competitors by default.'
         )
 
     if _t('S062'):
@@ -1441,6 +1758,15 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
             f'Portfolio governance needs to be tightened.'
         )
 
+    if _t('S097'):
+        texts['S097'] = (
+            f'{ctx.portfolio_count} portfolios exist. '
+            f'{ctx.managed_portfolio_count} are managed and '
+            f'{ctx.portfolios_with_budget_cap} have a budget cap. '
+            f'{ctx.campaigns_in_portfolio_pct:.0%} of campaigns sit inside portfolios, '
+            f'but the portfolio structure is not being used for budget governance.'
+        )
+
     if _t('S098'):
         texts['S098'] = (
             f'Campaign-level ACoS overrides are active while ACoS is above constraint '
@@ -1572,6 +1898,32 @@ def _build_what_we_saw(ctx: StrategyContext, flags: dict[str, str]) -> dict[str,
             f'SD active ({_dollar(ctx.spend_sd)}) but no ATC retargeting in place. '
             f'Add-to-cart retargeting via ProSuite AMC is not activated.'
         )
+
+
+    # ── objective framing ─────────────────────────────────────────────────────
+    # When the account objective changed how a control was scored, say so plainly
+    # so CSMs understand why the same account can score differently after an
+    # objective change in Salesforce.
+    _mode = getattr(ctx, '_obj_mode', 'neutral')
+    _mode_notes = {
+        'profit':      'The account objective is Profit Maximization, so the tolerance on this check is tighter.',
+        'growth':      'The account objective is Growth, so coverage and structure gaps weigh more on this check.',
+        'recovery':    'The account objective is Recovery/Stabilization, so this check is scored conservatively.',
+        'maintenance': 'The account objective is Maintenance, so unexplained changes weigh more on this check.',
+        'brand':       'The account objective is Brand Building, so upper-funnel spend is given more room on this check.',
+    }
+    _mode_affected = {
+        'profit':      ('S021', 'S022', 'S030', 'S042', 'S053', 'S054', 'S055',
+                        'S086', 'S087', 'S088', 'S089', 'S098', 'S099', 'S109'),
+        'growth':      ('S009', 'S023', 'S038'),
+        'recovery':    (),
+        'maintenance': ('S006',),
+        'brand':       (),
+    }
+    if _mode in _mode_notes:
+        for _sid in _mode_affected.get(_mode, ()):
+            if _sid in texts:
+                texts[_sid] = texts[_sid].rstrip() + ' ' + _mode_notes[_mode]
 
     return texts
 
