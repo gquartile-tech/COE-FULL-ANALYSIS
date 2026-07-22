@@ -976,10 +976,13 @@ def evaluate_all(ctx: DatabricksContext) -> Tuple[Dict[str, cfg.ControlResult], 
         try:
             results[cid] = fn(ctx)
         except Exception as e:
+            # SYSTEM ERROR, not FLAG — a crashed control is a tool failure, not a real
+            # finding. Graded as full penalty and machine-detectable downstream.
             results[cid] = cfg.ControlResult(
-                status=cfg.STATUS_FLAG,
-                what_we_saw=f"An error occurred while evaluating {cid}: {e}",
-                why_it_matters="A processing error stopped this control from running. Check the input file and re-run to resolve.",
+                status=cfg.STATUS_SYSTEM_ERROR,
+                what_we_saw=(f"SYSTEM ERROR — control {cid} did not complete and this row is not "
+                             f"valid ({type(e).__name__}). Re-run the account."),
+                why_it_matters="The tool crashed on this control. This is not a real finding. Re-run to resolve.",
                 data_source="Agent Runtime",
                 note=str(e),
             )

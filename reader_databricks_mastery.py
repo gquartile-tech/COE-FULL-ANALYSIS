@@ -281,8 +281,11 @@ def _latest_row_by_modstamp(df: pd.DataFrame) -> pd.Series:
             valid = df.dropna(subset=['_ts'])
             if not valid.empty:
                 return valid.loc[valid['_ts'].idxmax()].drop(labels=['_ts'])
-        except Exception:
-            pass
+        except Exception as _e:
+            # Surfaced (was silent): a failure here silently returns the wrong row
+            # (first instead of most-recent). Still degrades gracefully to iloc[0].
+            print(f"[reader_mastery] most-recent-row selection failed, using first row: "
+                  f"{type(_e).__name__}: {_e}")
     return df.iloc[0]
 
 

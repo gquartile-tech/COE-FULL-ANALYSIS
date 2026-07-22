@@ -1258,92 +1258,63 @@ def eval_C035(ctx: DatabricksContext) -> ControlResult:
 
 # ---- C036: CatchAll vs WATM ----
 def eval_C036(ctx: DatabricksContext) -> ControlResult:
-    WHY = "Accounts that meet the criteria (CPC < $0.50, 200+ ASINs, ACoS target < 15%) need a CatchAll or WATM campaign to capture unstructured traffic."
+    # FIXED (Pod Playbook): the old triple gate (CPC < $0.50 AND ASINs > 200 AND
+    # ACoS target < 15%) almost never fired, so this control was effectively dead.
+    # WATM is structural floor protection, not a conditional nicety. New logic is
+    # gated on catalog size only, and checks active WATM SPEND (not campaign count):
+    #   FLAG    if > 200 ASINs and no active WATM spend
+    #   PARTIAL if >  50 ASINs and no active WATM spend
+    #   OK      if WATM (or a CatchAll) has spend, or catalog is small
+    WHY = ("Wide-catalog accounts need a WATM or CatchAll campaign as a floor to catch "
+           "unstructured traffic that the granular and bulk campaigns miss. Without it, "
+           "search terms with no home go unserved.")
     sh10, df10 = ds(ctx, "CAMPAIGNS_BY_TYPE", "10_Campaigns_Grouped_by_QT_Camp")
     sh08, df08 = ds(ctx, "CAMPAIGN_REPORT", "08_Campaign_Report")
-    sh03, df03 = ds(ctx, "YEARLY_KPIS", "03_Yearly_KPIs")
     sh14, df14 = ds(ctx, "CAMPAIGN_PERF", "14_Campaign_Perf")
-    sh41, df41 = ds(ctx, "SELLER_PARAMS", "40_Seller_Params")
 
-    if df10 is None or df10.empty or df08 is None or df08.empty:
-        return flag(note_data_missing(expected_tab_label("10_Campaigns_Grouped_by_QT_Camp"), "CampaignSubType/CampaignName"), WHY)
+    if df10 is None or df10.empty:
+        return flag(note_data_missing(expected_tab_label("10_Campaigns_Grouped_by_QT_Camp"),
+                                      "CampaignSubType/Spend"), WHY)
 
+    # Active WATM spend from tab 10 (spend-based, not count-based).
     subtype = find_col(df10, ["campaignsubtype"])
-    campaigns = find_col(df10, ["campaigns"])
-    watm = 0
-    if subtype and campaigns:
+    spend_col = find_col(df10, ["spend"])
+    watm_spend = 0.0
+    if subtype and spend_col:
         rows = df10[df10[subtype].astype(str).str.strip().str.upper() == "WATM"]
-        watm = int(as_int(rows[campaigns].dropna().iloc[0]) or 0) if not rows.empty else 0
+        if not rows.empty:
+            watm_spend = float(as_float(rows[spend_col].dropna().iloc[0]) or 0.0) if not rows[spend_col].dropna().empty else 0.0
 
-    cname = find_col(df08, ["campaignname", "campaign name", "name"])
-    if not cname:
-        cname = get_col_by_letter(df08, "B")
+    # CatchAll (by name) counts as satisfying the floor too.
     catchall = False
-    if cname:
-        pat = re.compile(r"(catch[\s\-_]?all|un[\s_]?watm)", re.IGNORECASE)
-        catchall = df08[cname].astype(str).apply(lambda s: bool(pat.search(s))).any()
+    if df08 is not None and not df08.empty:
+        cname = find_col(df08, ["campaignname", "campaign name", "name"]) or get_col_by_letter(df08, "B")
+        if cname:
+            pat = re.compile(r"(catch[\s\-_]?all|un[\s_]?watm)", re.IGNORECASE)
+            catchall = df08[cname].astype(str).apply(lambda x: bool(pat.search(x))).any()
 
-    required = True
-
-    avg_cpc = None
-    if df03 is not None and not df03.empty:
-        col_b = get_col_by_letter(df03, "B")
-        if col_b:
-            col_a = get_col_by_letter(df03, "A")
-            if col_a:
-                rows = df03[df03[col_a].astype(str).str.contains("AvgCPC", case=False, na=False)]
-                if not rows.empty:
-                    avg_cpc = as_float(rows.iloc[0][col_b])
-            if avg_cpc is None and len(df03.index) >= 10:
-                avg_cpc = as_float(df03.iloc[9][col_b])
-    if avg_cpc is None:
-        required = False
-    else:
-        required = required and (avg_cpc < 0.50)
-
+    # Catalog size from tab 14 (count of distinct ASINs with any presence).
     asin_count = None
     if df14 is not None and not df14.empty:
-        asin_col = find_col(df14, ["asin"])
-        if not asin_col:
-            asin_col = get_col_by_letter(df14, "D")
+        asin_col = find_col(df14, ["asin"]) or get_col_by_letter(df14, "D")
         if asin_col:
             asin_count = int((df14[asin_col].astype(str).fillna("").str.strip() != "").sum())
+
+    if watm_spend > 0 or catchall:
+        label = "WATM" if watm_spend > 0 else "CatchAll"
+        return ok(f"{label} floor protection is active. Unstructured traffic is covered.", WHY)
+
     if asin_count is None:
-        required = False
-    else:
-        required = required and (asin_count > 200)
+        return partial("No active WATM or CatchAll spend was found. Catalog size could not be read "
+                       "to confirm how urgent this is — review the WATM floor manually.", WHY)
 
-    acos_target = None
-    if df41 is not None and not df41.empty:
-        col = find_col(df41, ["acostarget", "acos_target", "targetacos", "iacos", "iacos_percent"])
-        if col:
-            acos_target = as_float(df41.iloc[0][col])
-            if acos_target is not None:
-                acos_target = _normalize_pct(acos_target)
-        else:
-            col_u = get_col_by_letter(df41, "U")
-            if col_u:
-                acos_target = as_float(df41.iloc[0][col_u])
-                if acos_target is not None:
-                    acos_target = _normalize_pct(acos_target)
-    if acos_target is None:
-        required = False
-    else:
-        required = required and (acos_target < 15.0)
-
-    if not required:
-        if watm > 0 or catchall:
-            if catchall and watm == 0:
-                return partial("CatchAll is present even though it is not required for this account. WATM is missing.", WHY)
-            return ok(f"CatchAll or WATM is present. CatchAll is not required for this account based on current criteria.", WHY)
-        return flag("Neither CatchAll nor WATM was found. At least one is expected for accounts that meet the criteria.", WHY)
-
-    if catchall:
-        return ok("CatchAll campaign detected — requirement is met.", WHY)
-    if watm > 0 and not catchall:
-        return partial(f"CatchAll is required for this account but only WATM ({watm} campaign(s)) was detected.", WHY)
-    return flag("CatchAll is required for this account but was not found. No WATM campaign was detected either.", WHY)
-
+    if asin_count > 200:
+        return flag(f"This account has {asin_count} ASINs and no active WATM or CatchAll spend. "
+                    f"A WATM floor is needed to catch unstructured traffic on a catalog this wide.", WHY)
+    if asin_count > 50:
+        return partial(f"This account has {asin_count} ASINs and no active WATM or CatchAll spend. "
+                       f"A WATM floor is recommended to catch unstructured traffic.", WHY)
+    return ok(f"This account has {asin_count} ASINs. A WATM floor is optional at this catalog size.", WHY)
 
 # ---- C037: ATM Coverage — Top Sellers ----
 def eval_C037(ctx: DatabricksContext) -> ControlResult:
@@ -1783,5 +1754,11 @@ def evaluate_all(ctx: DatabricksContext) -> Dict[str, ControlResult]:
         try:
             results[cid] = fn(ctx)
         except Exception as e:
-            results[cid] = ControlResult(cfg.STATUS_FLAG, f"Error running {cid}: {type(e).__name__}: {e}", "")
+            # SYSTEM ERROR, not FLAG — a crashed control is a tool failure, not a real
+            # finding. Graded as full penalty and machine-detectable downstream.
+            results[cid] = ControlResult(
+                cfg.STATUS_SYSTEM_ERROR,
+                f"SYSTEM ERROR — control {cid} did not complete and this row is not valid "
+                f"({type(e).__name__}). Re-run the account.",
+                "")
     return results

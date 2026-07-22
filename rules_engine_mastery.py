@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from config_mastery import CONTROL_NAMES, IMPACT_LABEL, IMPORTANCE, PRIORITY_POINTS, SCORING_EXCLUDED, SOURCES, WHY, ControlResult
+from config_mastery import CONTROL_NAMES, IMPACT_LABEL, IMPORTANCE, PRIORITY_POINTS, SCORING_EXCLUDED, SOURCES, STATUS_SYSTEM_ERROR, WHY, ControlResult
 from reader_databricks_mastery import DatabricksContext, clean_text, money_str, monthly_budget_from_daily, norm_pct, pct_str, to_float, trim
 
 OBJECTIVE_WORDS = {'objective', 'goal', 'grow', 'growth', 'scale', 'increase', 'improve', 'stabilize', 'maintain', 'reduce', 'defend', 'accelerate', 'awareness', 'sales', 'profit', 'profitability', 'ranking', 'market share'}
@@ -254,9 +254,17 @@ def build_primary_objective(ctx: DatabricksContext, results: Dict[str, ControlRe
 
 
 def _fallback_results() -> Dict[str, ControlResult]:
-    """Returns a fully-flagged result set used when evaluate_all() fails mid-run."""
+    """Returned when evaluate_all() crashes mid-run.
+
+    Uses the SYSTEM ERROR status, not FLAG, so a crashed run is never mistaken for
+    real audit findings. The template grades SYSTEM ERROR as full penalty (an F),
+    so the run reads as broken rather than as a passing account, and the status is
+    machine-detectable so downstream tooling can skip the account.
+    """
+    msg = ('SYSTEM ERROR — this analysis did not complete and these results are not valid. '
+           'The tool crashed during evaluation. Re-run the account. Do not send this to the CSM.')
     return {
-        cid: ControlResult('FLAG', 'Evaluation failed — check input file and re-run.', WHY[cid], SOURCES[cid])
+        cid: ControlResult(STATUS_SYSTEM_ERROR, msg, WHY[cid], SOURCES[cid])
         for cid in CONTROL_NAMES
     }
 

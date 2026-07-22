@@ -8,6 +8,10 @@ from typing import Dict, List
 STATUS_OK = "OK"
 STATUS_FLAG = "FLAG"
 STATUS_PARTIAL = "PARTIAL"
+# Distinct from FLAG: signals the tool crashed, not that the account has a real problem.
+# Graded as full penalty in the template (F-equivalent) so a failed run never shows a
+# passing grade, and is machine-detectable so downstream tooling can quarantine the account.
+STATUS_SYSTEM_ERROR = "SYSTEM ERROR"
 
 
 # ---------- ControlResult (locked contract) ----------
